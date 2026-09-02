@@ -47,8 +47,19 @@ def scan_source(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     ignored = {".git", "node_modules", "venv", ".venv", "__pycache__"}
     for path in root.rglob("*"):
-        if not path.is_file() or not _is_scannable(path) or any(part in ignored for part in path.parts):
+        # Check the ignore list and extension BEFORE touching the filesystem
+        # (is_file() below calls stat(), which raises OSError on a broken
+        # symlink/junction — e.g. a Linux venv's "lib64 -> lib" symlink is
+        # unreadable on Windows with WinError 1920). Filtering by path parts
+        # first means a broken link inside an ignored dir like venv/ never
+        # reaches stat() at all.
+        if any(part in ignored for part in path.parts) or not _is_scannable(path):
             continue
+        try:
+            if not path.is_file():
+                continue
+        except OSError:
+            continue  # unreadable path (broken symlink/junction) — skip it
         try:
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
         except OSError:
