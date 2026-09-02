@@ -1,156 +1,303 @@
-# Dexter CLI
+```
+ ██████╗ ███████╗██╗  ██╗████████╗███████╗██████╗
+ ██╔══██╗██╔════╝╚██╗██╔╝╚══██╔══╝██╔════╝██╔══██╗
+ ██║  ██║█████╗   ╚███╔╝    ██║   █████╗  ██████╔╝
+ ██║  ██║██╔══╝   ██╔██╗    ██║   ██╔══╝  ██╔══██╗
+ ██████╔╝███████╗██╔╝ ██╗   ██║   ███████╗██║  ██║
+ ╚═════╝ ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 
-Dexter is a local-first application security assessment CLI. Every scan runs through the SAVR loop — Scan, Analyze, Verify, Refine — combining local rule checks with real external security tools, so findings come with a confidence score and a verification status, not just a severity label.
+        local-first, agentic application security assessment CLI
+```
 
-## Install
+<div align="center">
+
+![version](https://img.shields.io/badge/version-0.8.0-red?style=flat-square)
+![python](https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square)
+![license](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)
+![tests](https://img.shields.io/badge/tests-43%20passing-brightgreen?style=flat-square)
+![platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-informational?style=flat-square)
+
+**Scan → Analyze → Verify → Refine.**
+Not a single-pass scanner — a closed loop that investigates its own findings before it trusts them.
+
+</div>
+
+---
+
+## What is Dexter
+
+Most vulnerability scanners work the same broken way: run a fixed set of checks, dump a static report, hand the mess to a human. High false-positive rates, no correlation between tools, no transparent path from "flagged" to "confirmed."
+
+Dexter is different. Every scan runs through the **SAVR loop**:
+
+```
+   SCAN            ANALYZE          VERIFY              REFINE
+┌──────────┐    ┌──────────┐    ┌──────────────┐    ┌──────────────┐
+│ 9 tools  │───▶│ base     │───▶│ real agent   │───▶│ instruction- │
+│ + rules  │    │confidence│    │ reads code,  │    │ aware        │
+│          │    │ per rule │    │ checks       │    │ confidence   │
+│          │    │          │    │ entropy,     │    │ boost        │
+│          │    │          │    │ greps repo   │    │              │
+└──────────┘    └──────────┘    └──────────────┘    └──────────────┘
+```
+
+The **Verify** stage isn't a lookup table — it's a real tool-calling agent (ReAct pattern) that investigates ambiguous findings before deciding, the same way an agentic coding assistant investigates a bug before fixing it. It reads surrounding code, computes the entropy of a suspected secret, and searches the codebase for related usage — then gives a plain-English verdict, not just a severity label.
+
+---
+
+## Quickstart
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate
+.venv\Scripts\activate          # Windows
 pip install -e ".[dev]"
+
+dexter --target ./your-project -n --instruction "prioritize secrets and access control"
+wakeupdexter                     # interactive command center
 ```
 
-No external Python dependencies. External security tools (below) are optional — Dexter detects what's installed and skips the rest with no error.
+Full setup, tool installation links, and every environment variable are in [Usage](#usage--commands) below.
 
-## Setting up API keys properly
+---
 
-Don't type keys into every shell session. Create `~/.dexter/.env` (Windows: `%USERPROFILE%\.dexter\.env`) — Dexter loads it automatically on startup:
+## Table of Contents
+
+- [Architecture](#architecture)
+- [Project Status](#project-status)
+- [Usage & Commands](#usage--commands)
+- [LLM Provider Setup](#llm-provider-setup)
+- [Integrated Tools](#integrated-tools)
+- [Authorization & Safety Model](#authorization--safety-model)
+- [Repository Layout](#repository-layout)
+- [Roadmap](#roadmap)
+- [Team](#team)
+
+---
+
+## Architecture
 
 ```
-DEXTER_LLM_KEYS=key-one,key-two,key-three
+                     dexter (CLI)        wakeupdexter (interactive REPL)
+                          │                        │
+                          └────────────┬───────────┘
+                                        ▼
+                              dexter.loop.run_savr()
+                     (single shared engine — no logic duplicated
+                      between the CLI and the interactive dashboard)
+                                        │
+        ┌───────────────┬──────────────┼──────────────┬───────────────┐
+        ▼               ▼              ▼               ▼               ▼
+      SCAN           ANALYZE        VERIFY          REFINE          REPORT
+  local rules      base conf.   agentic ReAct    instruction-     LLM summary
+  + 9 ext tools    per finding  loop (tools:     aware boost      (technical or
+  (file + live-                 read_lines,      + circuit        human-language)
+  target, auth-                 entropy, grep)   breaker
+  gated)                        + offline
+                                 fallback
 ```
 
-- `DEXTER_LLM_KEYS` — comma-separated pool. If a key hits a 429, it's cooled down for `DEXTER_LLM_COOLDOWN_SECONDS` (default 5 hours) and Dexter rotates to the next key automatically. Cooldown state persists in `~/.dexter/key_state.json`.
-- `GROQ_API_KEY` / `LLM_API_KEY` — single-key alias if you don't need a pool.
-- `DEXTER_LLM_BASE_URL` — defaults to Groq's OpenAI-compatible endpoint. Point it at any other OpenAI-compatible provider (e.g. Ollama's hosted API) to pool keys from a different provider entirely.
-- `DEXTER_LLM_LOCAL_URL` / `DEXTER_LLM_LOCAL_MODEL` — if every pooled key is cooling down, Dexter tries local Ollama (default `http://localhost:11434/v1`) before falling back to a rules-only summary.
+Both entry points — the one-shot `dexter` command (CI-friendly, non-zero exit on findings) and the interactive `wakeupdexter` dashboard — call the exact same `run_savr()` engine, matching the "loop logic is never duplicated across interfaces" principle from the original project synopsis.
 
-Environment variables set in your shell always override the `.env` file. Check status any time:
+---
 
-```bash
-dexter auth
-```
+## Project Status
 
-## External security tools (optional, auto-detected)
+### Core engine
+- [x] SAVR loop (Scan → Analyze → Verify → Refine → Report) as a real, shared engine
+- [x] Circuit breaker on the Refine stage (bounded iterations, converges instead of looping forever)
+- [x] Confidence + verification fields on every finding (not just severity)
+- [x] Shared engine used identically by `dexter` (CLI) and `wakeupdexter` (REPL)
+- [x] Zero external Python runtime dependencies (pure stdlib `urllib`, `subprocess`, `xml.etree`)
 
-```bash
-dexter tools
-```
+### Agentic verification (real ReAct loop, not a fixed pipeline)
+- [x] Tool-calling support in the LLM provider layer (OpenAI-style `tools` / `tool_calls`)
+- [x] Verify-stage agent with three safe, read-only tools: `read_lines`, `shannon_entropy`, `grep_codebase`
+- [x] Circuit breaker on the tool-calling loop (max iterations, tested against a runaway-model scenario)
+- [x] Deterministic offline fallback when no LLM is reachable — Dexter still fully functions with zero API keys
+- [x] Plain-English reasoning attached to every agentically-verified finding
+- [ ] Analyze stage made agentic (cross-tool deduplication/correlation currently has no logic yet — findings from different tools on the same issue are not merged)
+- [ ] Refine stage made agentic (currently keyword-matching against `--instruction`, not model-driven)
+- [ ] Multi-agent coordinator + specialist subagents (Strix-style) — current agent scope is the Verify stage only, not a full coordinator spawning subagents per SAVR stage
 
-Shows what's installed. Nothing here is required — Dexter's built-in rules always run regardless.
+### Local static analysis rules
+- [x] Hard-coded secrets (quoted **and** unquoted `KEY=value` style — the unquoted case was a real bug, fixed)
+- [x] `.env` / `.env.local` file scanning (pathlib treats these as having no extension by default — fixed)
+- [x] Hardcoded JWT signing secrets
+- [x] CORS wildcard / reflected-origin misconfiguration
+- [x] React `dangerouslySetInnerHTML` (XSS risk)
+- [x] Dynamic command execution (`eval`, `exec`, `child_process.exec`)
+- [x] Debug mode enabled, TLS verification disabled, cleartext HTTP targets
+- [x] OpenAPI contract gaps (undocumented/unauthenticated operations)
 
-| Tool | Install | Covers |
-|---|---|---|
-| Semgrep | `pip install semgrep` | SAST, many languages |
-| Bandit | `pip install bandit` | Python-specific SAST |
-| Gitleaks | https://github.com/gitleaks/gitleaks/releases | Secrets, entropy-based |
-| Trivy | https://github.com/aquasecurity/trivy/releases | Dependency CVEs (needs a lockfile, e.g. `package-lock.json`) |
-| Nmap | https://nmap.org/download.html | Port/service recon — **requires authorization**, see below |
-| Nuclei | https://github.com/projectdiscovery/nuclei/releases | Live URL scanning — **requires authorization**, see below |
-| Nikto | https://github.com/sullo/nikto | Live URL scanning — **requires authorization**, see below (Perl-based; needs Strawberry Perl on Windows) |
-| OWASP ZAP | https://www.zaproxy.org/download/ | Live URL DAST — **requires authorization + a running ZAP daemon**, see below |
-| ffuf | https://github.com/ffuf/ffuf/releases | Content discovery (hidden paths/files) — **requires authorization**, bundled wordlist |
+### Integrated external tools
+- [x] **Semgrep** — SAST, many languages
+- [x] **Bandit** — Python-specific SAST
+- [x] **Gitleaks** — entropy-based secret scanning
+- [x] **Trivy** — dependency CVE scanning
+- [x] **Nmap** — port/service recon *(authorization-gated)*
+- [x] **Nuclei** — template-based DAST *(authorization-gated)*
+- [x] **Nikto** — web server misconfiguration scanning *(authorization-gated)*
+- [x] **OWASP ZAP** — spider + passive scan by default, active scan opt-in *(authorization-gated, connects to an externally-run daemon)*
+- [x] **ffuf** — content/path discovery with a bundled wordlist *(authorization-gated)*
+- [x] **sqlmap** — real SQL injection confirmation, kept structurally outside the automatic scan path; only reachable via an explicit `dexter exploit` command with a named parameter and a typed confirmation
+- [ ] **Metasploit** — deliberately not auto-wired; no generic "just run it" invocation exists for an exploit framework the way it does for the tools above. A resource-script passthrough (you supply the `.rc` file, Dexter just executes and captures output) is a scoped, honest way to add this later
+- [ ] OSV-Scanner, Checkov, Grype, Gobuster, Wapiti, WhatWeb, OpenVAS — evaluated, mostly overlap with tools already integrated, not built
 
-Trivy downloads a ~110MB vulnerability database on first use — needs internet, only happens once.
+### Safety & authorization
+- [x] Explicit authorization list (`dexter authorize <target>`) required before any live-target tool runs
+- [x] Active-exploitation tools (sqlmap) structurally separated from the automatic scan registry — enforced by a unit test, not just convention
+- [x] Confirmation prompt before any exploit-tier action in the interactive dashboard
 
-## OWASP ZAP setup (different from the other tools)
+### Reliability & LLM infrastructure
+- [x] Multi-key provider pool with automatic rotation and cooldown persistence across sessions
+- [x] Local model fallback tier (Ollama / llama.cpp — anything OpenAI-compatible) when all pooled keys are exhausted
+- [x] `.env`-file based key management (`~/.dexter/.env`) instead of re-typing keys per session
+- [x] Human-language report generation (`--format human`) alongside technical Markdown/JSON
 
-Every other tool here is a one-shot CLI Dexter runs and reads the output of. ZAP isn't — it's a long-running daemon with a REST API, and **Dexter connects to it rather than launching it**. Start ZAP yourself before scanning:
+### Developer experience
+- [x] `dexter tools` — live installed/missing status for every integrated tool
+- [x] Interactive `wakeupdexter` REPL with `/tool <target>` slash commands per adapter
+- [x] Live per-stage and per-tool progress output during a scan (not a silent wait)
+- [x] 43 automated tests, all isolated from external network/tool availability for fast, deterministic CI runs
 
-```bash
-# Standalone (needs Java 17+):
-zap.sh -daemon -host 0.0.0.0 -port 8080 -config api.disablekey=true
+### Not yet built
+- [ ] Docker sandboxing for tool execution — every tool currently runs via a direct host subprocess, not a container. Stated as a first-class architectural constraint in the original project synopsis; genuinely outstanding
+- [ ] Formal four-rung verifier ladder as a named, distinct structure (current Verify stage covers the same intent — deterministic check → agentic investigation → offline fallback — but isn't formalized into four explicit named rungs)
+- [ ] Cross-tool finding correlation/deduplication (Semgrep and a local rule flagging the same line currently show up as two findings, not one merged one)
+- [ ] Historical run diffing ("+2 high severity since last scan")
+- [ ] Web dashboard — exists on the `backup-web-platform` branch (FastAPI + Celery + Postgres + React), shelved in favor of the CLI-first direction, not deleted
 
-# Or Docker:
-docker run -u zap -p 8080:8080 zaproxy/zap-stable zap.sh -daemon -host 0.0.0.0 -port 8080 -config api.disablekey=true
-```
+---
 
-Then `dexter tools` will show `zap` as installed once the daemon is reachable at `http://localhost:8080` (override with `DEXTER_ZAP_URL`). If you set an API key on the daemon, set `DEXTER_ZAP_API_KEY` to match.
-
-By default Dexter runs ZAP's spider + **passive** scan only (fast — checks headers, cookies, CSP, information disclosure). Full **active** scanning (real attack payloads, much slower, can take many minutes) is opt-in:
-
-```bash
-set DEXTER_ZAP_ACTIVE_SCAN=1
-```
-
-Like Nmap/Nuclei/Nikto, ZAP only runs against `dexter authorize`'d targets.
-
-## Authorization for live-target tools
-
-Nmap, Nuclei, Nikto, ZAP, and ffuf actively probe a running target. Dexter won't run them against a host or URL unless it's been explicitly authorized:
-
-```bash
-dexter authorize scanme.nmap.org
-dexter authorize https://your-authorized-target.test
-dexter authorize --list
-dexter authorize --revoke <target>
-```
-
-Scanning an unauthorized target still runs (local checks + any file-based tools that apply), it just skips the live-target tools and tells you why.
-
-## Tools evaluated but not integrated (yet, or by design)
-
-Two internal research docs (Semgrep/Nmap/Nuclei/ZAP/etc. cross-platform tool studies) fed the current tool list. Rather than integrate everything named, here's the honest state:
-
-- **sqlmap** — integrated, but deliberately **not** part of the normal `scan`/`run_adapters` path. A normal scan of an authorized target will never fire it. It's only reachable via the explicit `dexter exploit` command below, requires you to name the exact parameter (matches responsible manual sqlmap usage — no blind-fuzzing a whole target), and `wakeupdexter`'s `exploit` command asks for a typed `yes` confirmation before running.
-- **Metasploit** — not wired as an auto-invoking adapter. Unlike the other tools, there's no sensible generic "just run it against a target" behavior — Metasploit requires picking a specific exploit module and payload before it does anything meaningful. Install and run it standalone (`msfconsole`) for now; a resource-script passthrough (you write the `.rc` file naming the exact module, Dexter just executes it and captures output) is a reasonable, well-scoped follow-up if wanted.
-
-## Active exploitation (sqlmap)
-
-```bash
-dexter authorize http://your-authorized-target.test/page?id=1
-dexter exploit sqlmap "http://your-authorized-target.test/page?id=1" --param id
-```
-
-In `wakeupdexter`:
-```
-exploit sqlmap <url> --param id
-```
-This asks for a typed `yes` before running — it is never triggered by a normal `scan`.
-- **ffuf** — reasonable P1 addition (content discovery), needs a wordlist file which isn't bundled. Doable if wanted.
-- **OSV-Scanner, Checkov, Grype, Gobuster, Wapiti, WhatWeb, OpenVAS** — P2 in both research docs; mostly overlap with what Trivy/Nuclei already cover. Not integrated; can be added individually if a specific gap shows up.
-
-## Usage
+## Usage & Commands
 
 ```bash
 dexter --target ./app --scan-mode standard
 dexter -n -t ./app --instruction "Prioritize authentication and access control"
 dexter --target-list ./targets.txt --run-name ci-scan
-dexter report ci-scan --format human      # plain-language summary
+dexter report ci-scan --format human
 dexter report ci-scan --format markdown --output report.md
 dexter view ci-scan
 dexter tools
 dexter auth
 dexter authorize <target>
+dexter exploit sqlmap "<url>" --param id
 wakeupdexter
 ```
 
-## `wakeupdexter` — the interactive command center
+**Inside `wakeupdexter`:**
 
 ```
-scan <path> [instructions]              full SAVR loop: local rules + every installed tool
-/semgrep, /bandit, /gitleaks, /trivy <path>   run one tool directly
-/nmap, /nuclei, /nikto <host-or-url>    run one live-target tool (needs authorize first)
-/tools                                  show which external tools are installed
-authorize <target>                      allow a live URL target for Nuclei/Nikto
-runs                                    list saved assessments
-report [run] [human]                    print a report — add "human" for plain-language
-view [run]                              open the local browser viewer
-pool                                    show LLM provider/key pool status
+scan <path> [instructions]                     full SAVR loop — local rules + every installed tool
+/semgrep, /bandit, /gitleaks, /trivy <path>    run one tool directly
+/nmap, /nuclei, /nikto, /zap, /ffuf <target>   run one live-target tool (needs authorize first)
+exploit sqlmap <url> --param <name>            explicit exploitation step, asks for confirmation
+authorize <target>                             allow a live target for gated tools
+/tools                                         show installed/missing tool status
+runs · report [run] [human] · view [run] · pool
 ```
 
-Exit status is non-zero when findings are present, which makes `-n` suitable for CI. Only test systems you own or have explicit written permission to assess.
+Exit status is non-zero when findings are present — `-n` mode is CI-safe.
 
-## The SAVR loop
+---
 
-1. **Scan** — local rule checks (secrets, JWT hardcoding, CORS wildcards, XSS patterns, dynamic execution, debug flags, TLS, naive SQLi, OpenAPI gaps) plus every installed external tool applicable to the target type.
-2. **Analyze** — each finding starts with a confidence score: local rules set a base value per rule, external tools report their own.
-3. **Verify** — deterministic facts are marked verified outright. Everything else runs through a real tool-calling verification agent: it can read surrounding code, compute the entropy of a suspected secret, and grep the codebase for related usage before deciding — the same tool-calling ("ReAct") pattern used by agentic coding tools, applied here to security verification. Its tools are deliberately read-only and local; it never invokes live-target or exploit tools on its own. If no LLM is configured, Dexter falls back to a deterministic placeholder-pattern heuristic so it still works fully offline. External tool findings are trusted at their own reported confidence level.
-4. **Refine** — `--instruction` keywords give matching findings a one-time confidence boost, capped by a circuit breaker.
+## LLM Provider Setup
 
-## Development
+Create `~/.dexter/.env` (Windows: `%USERPROFILE%\.dexter\.env`) so you never retype keys:
 
-```bash
-pytest
-python -m compileall -q src
 ```
+DEXTER_LLM_KEYS=key-one,key-two,key-three
+```
+
+| Variable | Purpose |
+|---|---|
+| `DEXTER_LLM_KEYS` | Comma-separated key pool. A 429 cools that key down and rotates to the next automatically. |
+| `DEXTER_LLM_BASE_URL` | Any OpenAI-compatible endpoint — Groq (default), Ollama's hosted API, or your own. |
+| `DEXTER_LLM_LOCAL_URL` | Fallback tier when every pooled key is cooling — point at local Ollama or a `llama.cpp` server. |
+| `DEXTER_LLM_COOLDOWN_SECONDS` | Cooldown duration per key (default 5 hours). |
+
+`dexter auth` shows live status of every key and the local fallback.
+
+---
+
+## Integrated Tools
+
+| Tool | Type | Gate | Status |
+|---|---|---|---|
+| Semgrep | SAST | none | ✅ Live-tested |
+| Bandit | Python SAST | none | ✅ Live-tested |
+| Gitleaks | Secrets | none | ✅ Live-tested |
+| Trivy | Dependency CVEs | none | ✅ Live-tested |
+| Nmap | Recon | authorization | ✅ Live-tested |
+| Nuclei | DAST | authorization | ✅ Built |
+| Nikto | Web misconfig | authorization | ✅ Built (Perl-based, needs Strawberry Perl on Windows) |
+| OWASP ZAP | DAST | authorization + running daemon | ✅ Live-tested (passive mode) |
+| ffuf | Content discovery | authorization | ✅ Live-tested |
+| sqlmap | Exploitation | authorization + explicit `exploit` command | ✅ Live-tested against a real injectable endpoint |
+| Metasploit | Exploitation | — | ❌ Not auto-wired, by design |
+
+---
+
+## Authorization & Safety Model
+
+Dexter treats "authorized targets only" as enforced behavior, not a suggestion:
+
+- Live-target tools (Nmap, Nuclei, Nikto, ZAP, ffuf) refuse to run against anything not explicitly added via `dexter authorize <target>`.
+- Exploitation-tier tools (sqlmap) are kept **structurally outside** the automatic scan registry — a dedicated test asserts this at the code level, so it can't silently regress.
+- Exploit-tier actions require an explicit, separate command and a typed confirmation — never triggered by a normal `scan`.
+- Metasploit has no automatic invocation at all, because there is no safe generic "just run it" behavior for an exploit framework the way there is for a scanner.
+
+---
+
+## Repository Layout
+
+```
+src/dexter/
+├── cli.py              one-shot CLI entry point
+├── dashboard.py         wakeupdexter interactive REPL
+├── loop.py               the SAVR loop itself
+├── agentic_verify.py     ReAct tool-calling verification agent
+├── tools.py              external tool adapters + registry
+├── scanner.py            local static-analysis rules
+├── provider_pool.py     LLM key rotation + tool-calling support
+├── authorization.py      authorized-target list
+├── report.py             human-language report generation
+├── env_file.py           ~/.dexter/.env loader
+├── models.py / storage.py
+└── wordlists/common.txt  bundled ffuf content-discovery wordlist
+tests/                    43 tests, isolated from network/tool availability
+```
+
+---
+
+## Roadmap
+
+- [ ] Docker sandbox isolation for tool execution
+- [ ] Cross-tool finding correlation & deduplication
+- [ ] Agentic Analyze and Refine stages
+- [ ] Multi-agent coordinator spawning per-stage subagents
+- [ ] Historical run diffing across scans
+- [ ] Metasploit resource-script passthrough
+- [ ] Revisit the web dashboard (currently on `backup-web-platform`)
+
+---
+
+## Team
+
+| Name | Role |
+|---|---|
+| Kartik R. Pagariya | — |
+| Vikrant K. Kadam | — |
+| Aditya U. Dengale | — |
+| Pranali D. Yelavikar | — |
+| Dr. Parikshit Mahalne | Project Guide |
+
+**VIT — AI & Data Science, Final Year Project**
+
+---
+
+<div align="center">
+
+*Only test systems you own or have explicit written permission to assess.*
+
+</div>
