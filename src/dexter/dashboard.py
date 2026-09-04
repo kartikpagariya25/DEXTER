@@ -441,7 +441,7 @@ def launch() -> int:
             print(f"{Theme.green}✓{Theme.reset} authorized: {parts[1]}")
             input(f"\n{Theme.muted}press enter to continue...{Theme.reset}")
         elif action == "scan" and len(parts) > 1:
-            target = str(Path(parts[1]).expanduser())
+            target = parts[1] if parts[1].startswith("http") else str(Path(parts[1]).expanduser())
             instructions = " ".join(parts[2:])
             findings = _scan(target, instructions)
         elif action == "pool":
