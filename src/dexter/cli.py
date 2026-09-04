@@ -17,6 +17,7 @@ from .env_file import load_env
 from .loop import insight_summary, run_savr
 from .provider_pool import pool_status
 from .report import generate_human_report
+from .sandbox import build_image, docker_available, image_exists
 from .storage import data_dir, load_run, save_run, safe_run_id
 from .tools import is_live_target, run_single_exploit, tool_status
 
@@ -53,9 +54,12 @@ def build_parser() -> argparse.ArgumentParser:
     authorize_cmd.add_argument("--list", action="store_true")
     authorize_cmd.add_argument("--revoke", action="store_true")
     exploit_cmd = subparsers.add_parser("exploit", help="Explicit, separate step for active exploitation tools (never runs from a normal scan)")
-    exploit_cmd.add_argument("tool", choices=["sqlmap"])
-    exploit_cmd.add_argument("target")
-    exploit_cmd.add_argument("--param", required=True, help="Exact parameter name to test — required, no blind-fuzzing a whole target")
+    exploit_cmd.add_argument("tool", choices=["sqlmap", "jwt_tool"])
+    exploit_cmd.add_argument("target", help="URL+param target for sqlmap, or the JWT string itself for jwt_tool")
+    exploit_cmd.add_argument("--param", help="Exact parameter name to test — required for sqlmap, unused by jwt_tool")
+    sandbox_cmd = subparsers.add_parser("sandbox", help="Manage the Docker sandbox image used when DEXTER_SANDBOX=1")
+    sandbox_cmd.add_argument("action", choices=["build", "status"])
+    sandbox_cmd.add_argument("--with-browser", action="store_true", help="Also install Chromium + agent-browser (adds ~20-30 min; skip unless you need browser-driven checks)")
     return parser
 
 
@@ -161,9 +165,24 @@ def main(argv: list[str] | None = None) -> int:
             authorize(args.target)
             print(f"Authorized: {args.target}")
         return 0
+    if args.command == "sandbox":
+        if args.action == "status":
+            print(f"docker available: {docker_available()}")
+            print(f"image built:      {image_exists()}")
+            print(f"DEXTER_SANDBOX=1 to enable it for scans once the image is built.")
+            return 0
+        if args.action == "build":
+            extra = " (with browser/Chromium — adds ~20-30 min)" if args.with_browser else ""
+            print(f"Building dexter-sandbox image{extra} — can take a few minutes.")
+            print("(Docker prints nothing while a step is running, so pauses on heavy steps are normal, not a hang.)\n")
+            ok, _ = build_image(on_line=print, with_browser=args.with_browser)
+            print("\nBuild succeeded." if ok else "\nBuild FAILED — see output above.")
+            return 0 if ok else 1
     if args.command == "exploit":
+        if args.tool == "sqlmap" and not args.param:
+            parser.error("sqlmap requires --param (exact parameter name to test — no blind-fuzzing a whole target)")
         try:
-            findings = run_single_exploit(args.tool, args.target, args.param)
+            findings = run_single_exploit(args.tool, args.target, args.param or "")
         except (ValueError, RuntimeError) as exc:
             parser.error(str(exc))
         for finding in findings:

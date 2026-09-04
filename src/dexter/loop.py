@@ -6,6 +6,7 @@ from typing import Callable
 from .agentic_verify import agentic_verify
 from .llm import enrich
 from .models import Finding, Run
+from .sandbox import Sandbox, sandbox_enabled, set_active
 from .scanner import scan_target
 from .tools import run_adapters
 
@@ -103,7 +104,23 @@ def run_savr(
     findings: list[Finding] = []
     for target in targets:
         findings.extend(scan_target(target))
-        findings.extend(run_adapters(target, on_tool=lambda name: stage(f"scan:{name}")))
+        box: Sandbox | None = None
+        if sandbox_enabled():
+            local_dir = target if Path(target).is_dir() else None
+            try:
+                box = Sandbox(local_dir)
+                box.start()
+                set_active(box)
+                stage(f"scan:sandbox-started ({box.container_name})")
+            except RuntimeError as exc:
+                stage(f"scan:sandbox-unavailable ({exc}) — falling back to host execution")
+                box = None
+        try:
+            findings.extend(run_adapters(target, on_tool=lambda name: stage(f"scan:{name}")))
+        finally:
+            if box is not None:
+                set_active(None)
+                box.stop()
     run.findings = findings
 
     stage("analyze")
