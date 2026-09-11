@@ -11,10 +11,10 @@
 
 <div align="center">
 
-![version](https://img.shields.io/badge/version-0.8.0-red?style=flat-square)
+![version](https://img.shields.io/badge/version-0.9.0-red?style=flat-square)
 ![python](https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)
-![tests](https://img.shields.io/badge/tests-43%20passing-brightgreen?style=flat-square)
+![tests](https://img.shields.io/badge/tests-65%20passing-brightgreen?style=flat-square)
 ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-informational?style=flat-square)
 
 **Scan → Analyze → Verify → Refine.**
@@ -33,7 +33,7 @@ Dexter is different. Every scan runs through the **SAVR loop**:
 ```
    SCAN            ANALYZE          VERIFY              REFINE
 ┌──────────┐    ┌──────────┐    ┌──────────────┐    ┌──────────────┐
-│ 9 tools  │───▶│ base     │───▶│ real agent   │───▶│ instruction- │
+│ 14 tools │───▶│ base     │───▶│ real agent   │───▶│ instruction- │
 │ + rules  │    │confidence│    │ reads code,  │    │ aware        │
 │          │    │ per rule │    │ checks       │    │ confidence   │
 │          │    │          │    │ entropy,     │    │ boost        │
@@ -42,6 +42,8 @@ Dexter is different. Every scan runs through the **SAVR loop**:
 ```
 
 The **Verify** stage isn't a lookup table — it's a real tool-calling agent (ReAct pattern) that investigates ambiguous findings before deciding, the same way an agentic coding assistant investigates a bug before fixing it. It reads surrounding code, computes the entropy of a suspected secret, and searches the codebase for related usage — then gives a plain-English verdict, not just a severity label.
+
+Tool execution is **sandboxed when Docker is available**: every tool can run inside a disposable, per-scan container instead of directly on your host — see [Docker Sandbox](#docker-sandbox) below.
 
 ---
 
@@ -56,6 +58,14 @@ dexter --target ./your-project -n --instruction "prioritize secrets and access c
 wakeupdexter                     # interactive command center
 ```
 
+**Recommended — build the sandbox once so tools don't need host installation:**
+
+```bash
+dexter sandbox build            # ~5-10 min, builds the Docker image
+set DEXTER_SANDBOX=1            # Windows CMD (PowerShell: $env:DEXTER_SANDBOX="1")
+dexter --target ./your-project -n
+```
+
 Full setup, tool installation links, and every environment variable are in [Usage](#usage--commands) below.
 
 ---
@@ -63,6 +73,7 @@ Full setup, tool installation links, and every environment variable are in [Usag
 ## Table of Contents
 
 - [Architecture](#architecture)
+- [Docker Sandbox](#docker-sandbox)
 - [Project Status](#project-status)
 - [Usage & Commands](#usage--commands)
 - [LLM Provider Setup](#llm-provider-setup)
@@ -89,14 +100,57 @@ Full setup, tool installation links, and every environment variable are in [Usag
         ▼               ▼              ▼               ▼               ▼
       SCAN           ANALYZE        VERIFY          REFINE          REPORT
   local rules      base conf.   agentic ReAct    instruction-     LLM summary
-  + 9 ext tools    per finding  loop (tools:     aware boost      (technical or
+  + 14 ext tools   per finding  loop (tools:     aware boost      (technical or
   (file + live-                 read_lines,      + circuit        human-language)
   target, auth-                 entropy, grep)   breaker
-  gated)                        + offline
-                                 fallback
+  gated) — run                  + offline
+  in a per-scan                 fallback
+  Docker sandbox
+  when available
 ```
 
 Both entry points — the one-shot `dexter` command (CI-friendly, non-zero exit on findings) and the interactive `wakeupdexter` dashboard — call the exact same `run_savr()` engine, matching the "loop logic is never duplicated across interfaces" principle from the original project synopsis.
+
+---
+
+## Docker Sandbox
+
+When `DEXTER_SANDBOX=1` is set, every containerized tool in the Scan stage runs inside a disposable, per-run Docker container instead of directly on your machine — the target directory is bind-mounted read-only at `/workspace`, and the container is destroyed the moment the scan finishes. This removes host-OS friction entirely (no per-platform tool installs, no PATH issues, no Windows-specific tool ports) and isolates whatever a scan tool does from your real environment.
+
+### One-time setup
+
+```bash
+dexter sandbox build              # fast path — skips Chromium (~5-10 min)
+dexter sandbox build --with-browser   # adds Chromium + agent-browser (~20-30 min extra; not used by any tool yet, only needed for future browser-driven checks)
+dexter sandbox status             # check Docker + image status any time
+```
+
+### Using it
+
+```bash
+set DEXTER_SANDBOX=1              # Windows CMD
+$env:DEXTER_SANDBOX="1"           # PowerShell
+export DEXTER_SANDBOX=1           # Linux/macOS
+
+dexter --target ./your-project -n
+```
+
+If Docker isn't available, Dexter prints a notice and transparently falls back to running tools on the host — `DEXTER_SANDBOX=1` is always safe to leave set.
+
+### Important: reaching a locally-running app from inside the sandbox
+
+Containers don't share the host's `localhost`. If you're scanning something running on your own machine (e.g. a Flask dev server on `http://localhost:5000`) with `DEXTER_SANDBOX=1`, use Docker Desktop's special DNS name instead:
+
+```bash
+dexter authorize http://host.docker.internal:5000
+dexter --target http://host.docker.internal:5000 -n
+```
+
+(`localhost:5000` still works correctly for local-directory scans, and for URL scans when `DEXTER_SANDBOX` is unset.)
+
+### What's inside the image
+
+`containers/Dockerfile` — Kali-based, deliberately minimal (not `kali-linux-everything`): only tools Dexter actually wires up, pulled as pre-built binaries from each project's GitHub Releases where possible (faster and far more reliable in CI than compiling from source). See [Integrated Tools](#integrated-tools) for the full list and what's sandboxed vs. host-only today.
 
 ---
 
@@ -108,6 +162,7 @@ Both entry points — the one-shot `dexter` command (CI-friendly, non-zero exit 
 - [x] Confidence + verification fields on every finding (not just severity)
 - [x] Shared engine used identically by `dexter` (CLI) and `wakeupdexter` (REPL)
 - [x] Zero external Python runtime dependencies (pure stdlib `urllib`, `subprocess`, `xml.etree`)
+- [x] **Docker sandbox execution** (`DEXTER_SANDBOX=1`) — per-scan disposable container, host fallback when Docker is unavailable
 
 ### Agentic verification (real ReAct loop, not a fixed pipeline)
 - [x] Tool-calling support in the LLM provider layer (OpenAI-style `tools` / `tool_calls`)
@@ -115,7 +170,7 @@ Both entry points — the one-shot `dexter` command (CI-friendly, non-zero exit 
 - [x] Circuit breaker on the tool-calling loop (max iterations, tested against a runaway-model scenario)
 - [x] Deterministic offline fallback when no LLM is reachable — Dexter still fully functions with zero API keys
 - [x] Plain-English reasoning attached to every agentically-verified finding
-- [ ] Analyze stage made agentic (cross-tool deduplication/correlation currently has no logic yet — findings from different tools on the same issue are not merged)
+- [ ] Analyze stage made agentic (cross-tool deduplication/correlation currently has no logic yet — findings from different tools on the same issue still show up as separate findings, e.g. Semgrep + Bandit + a local rule all flagging the same `debug=True` line)
 - [ ] Refine stage made agentic (currently keyword-matching against `--instruction`, not model-driven)
 - [ ] Multi-agent coordinator + specialist subagents (Strix-style) — current agent scope is the Verify stage only, not a full coordinator spawning subagents per SAVR stage
 
@@ -128,25 +183,26 @@ Both entry points — the one-shot `dexter` command (CI-friendly, non-zero exit 
 - [x] Dynamic command execution (`eval`, `exec`, `child_process.exec`)
 - [x] Debug mode enabled, TLS verification disabled, cleartext HTTP targets
 - [x] OpenAPI contract gaps (undocumented/unauthenticated operations)
+- [x] Broken-symlink / junction safety (a Linux venv's `lib64 -> lib` symlink used to crash the whole scan on Windows with `WinError 1920` — the ignore-list check now runs before the filesystem `stat()` call that could raise, with a try/except as a second line of defense)
 
 ### Integrated external tools
-- [x] **Semgrep** — SAST, many languages
-- [x] **Bandit** — Python-specific SAST
-- [x] **Gitleaks** — entropy-based secret scanning
+14 tools total — see the [full table](#integrated-tools) for sandbox-vs-host status and gating.
+- [x] **Semgrep**, **Bandit** — SAST
+- [x] **Gitleaks**, **Trufflehog** — secret scanning (Trufflehog additionally verifies whether a matched credential is still live against its provider's API)
 - [x] **Trivy** — dependency CVE scanning
-- [x] **Nmap** — port/service recon *(authorization-gated)*
-- [x] **Nuclei** — template-based DAST *(authorization-gated)*
-- [x] **Nikto** — web server misconfiguration scanning *(authorization-gated)*
-- [x] **OWASP ZAP** — spider + passive scan by default, active scan opt-in *(authorization-gated, connects to an externally-run daemon)*
-- [x] **ffuf** — content/path discovery with a bundled wordlist *(authorization-gated)*
-- [x] **sqlmap** — real SQL injection confirmation, kept structurally outside the automatic scan path; only reachable via an explicit `dexter exploit` command with a named parameter and a typed confirmation
-- [ ] **Metasploit** — deliberately not auto-wired; no generic "just run it" invocation exists for an exploit framework the way it does for the tools above. A resource-script passthrough (you supply the `.rc` file, Dexter just executes and captures output) is a scoped, honest way to add this later
-- [ ] OSV-Scanner, Checkov, Grype, Gobuster, Wapiti, WhatWeb, OpenVAS — evaluated, mostly overlap with tools already integrated, not built
+- [x] **Retire.js**, **ESLint** (security ruleset), **ast-grep** — frontend/structural SAST
+- [x] **httpx**, **katana** — recon / tech fingerprinting / crawling *(authorization-gated)*
+- [x] **Nmap**, **Nuclei**, **Nikto**, **ffuf** — recon/DAST/content-discovery *(authorization-gated; host-installed only — not yet ported into the sandbox image, see [Roadmap](#roadmap))*
+- [x] **OWASP ZAP** — spider + passive scan by default, active scan opt-in *(authorization-gated, connects to an externally-run daemon; host-only)*
+- [x] **sqlmap** — real SQL injection confirmation, kept structurally outside the automatic scan path; only reachable via an explicit `dexter exploit` command with a named parameter
+- [x] **jwt_tool** — JWT weakness testing, same exploit-gating pattern as sqlmap; takes the token directly rather than a target+param
+- [ ] **Metasploit** — deliberately not auto-wired; no generic "just run it" invocation exists for an exploit framework the way it does for the tools above
 
 ### Safety & authorization
 - [x] Explicit authorization list (`dexter authorize <target>`) required before any live-target tool runs
-- [x] Active-exploitation tools (sqlmap) structurally separated from the automatic scan registry — enforced by a unit test, not just convention
+- [x] Active-exploitation tools (sqlmap, jwt_tool) structurally separated from the automatic scan registry — enforced by a unit test, not just convention
 - [x] Confirmation prompt before any exploit-tier action in the interactive dashboard
+- [x] `venv`/`node_modules`/`.git`/`site-packages` excluded from Semgrep and Bandit scans (previously flooded results with third-party library findings the user has no ability to fix)
 
 ### Reliability & LLM infrastructure
 - [x] Multi-key provider pool with automatic rotation and cooldown persistence across sessions
@@ -155,17 +211,20 @@ Both entry points — the one-shot `dexter` command (CI-friendly, non-zero exit 
 - [x] Human-language report generation (`--format human`) alongside technical Markdown/JSON
 
 ### Developer experience
-- [x] `dexter tools` — live installed/missing status for every integrated tool
+- [x] `dexter tools` — live installed/missing status for every integrated tool (checks inside the active sandbox container when `DEXTER_SANDBOX=1`, host PATH otherwise)
+- [x] `dexter sandbox build` / `dexter sandbox status` — build/inspect the Docker image, with live streaming build output
 - [x] Interactive `wakeupdexter` REPL with `/tool <target>` slash commands per adapter
 - [x] Live per-stage and per-tool progress output during a scan (not a silent wait)
-- [x] 43 automated tests, all isolated from external network/tool availability for fast, deterministic CI runs
+- [x] 65 automated tests, all isolated from external network/tool/Docker availability for fast, deterministic CI runs
+- [x] Fixed: the `scan` command in `wakeupdexter` used to run every target through `pathlib.Path()`, which corrupts URLs on Windows (`https://example.com/` → `https:\example.com`) — a URL could be authorized correctly and still get reported "not authorized" on scan because the corrupted string no longer matched. URLs now pass through unchanged; only local paths get `Path()`-ified.
 
 ### Not yet built
-- [ ] Docker sandboxing for tool execution — every tool currently runs via a direct host subprocess, not a container. Stated as a first-class architectural constraint in the original project synopsis; genuinely outstanding
+- [ ] Full tool parity inside the sandbox — Nmap, Nuclei, Nikto, ffuf, ZAP, sqlmap, jwt_tool currently still run host-side even when `DEXTER_SANDBOX=1`; only the file-scanning tools + httpx/katana are containerized so far
 - [ ] Formal four-rung verifier ladder as a named, distinct structure (current Verify stage covers the same intent — deterministic check → agentic investigation → offline fallback — but isn't formalized into four explicit named rungs)
-- [ ] Cross-tool finding correlation/deduplication (Semgrep and a local rule flagging the same line currently show up as two findings, not one merged one)
+- [ ] Cross-tool finding correlation/deduplication (Semgrep, Bandit, and a local rule flagging the same line currently show up as three findings, not one merged one)
 - [ ] Historical run diffing ("+2 high severity since last scan")
 - [ ] Web dashboard — exists on the `backup-web-platform` branch (FastAPI + Celery + Postgres + React), shelved in favor of the CLI-first direction, not deleted
+- [ ] Browser-driven verification (Chromium/agent-browser are installable in the sandbox via `--with-browser`, but no tool adapter uses them yet — needed for auth-flow/DOM-based-XSS checks that a static/HTTP-only tool can't see)
 
 ---
 
@@ -182,17 +241,20 @@ dexter tools
 dexter auth
 dexter authorize <target>
 dexter exploit sqlmap "<url>" --param id
+dexter exploit jwt_tool "<jwt>"
+dexter sandbox build [--with-browser]
+dexter sandbox status
 wakeupdexter
 ```
 
 **Inside `wakeupdexter`:**
 
 ```
-scan <path> [instructions]                     full SAVR loop — local rules + every installed tool
+scan <path-or-url> [instructions]              full SAVR loop — local rules + every installed tool
 /semgrep, /bandit, /gitleaks, /trivy <path>    run one tool directly
 /nmap, /nuclei, /nikto, /zap, /ffuf <target>   run one live-target tool (needs authorize first)
 exploit sqlmap <url> --param <name>            explicit exploitation step, asks for confirmation
-authorize <target>                             allow a live target for gated tools
+authorize <target>                             allow a live target for gated tools (URL or local path)
 /tools                                         show installed/missing tool status
 runs · report [run] [human] · view [run] · pool
 ```
@@ -218,23 +280,33 @@ DEXTER_LLM_KEYS=key-one,key-two,key-three
 
 `dexter auth` shows live status of every key and the local fallback.
 
+> **Never commit a real key.** If one ends up in `.env` inside a scanned project (rather than `~/.dexter/.env`), Dexter's own Gitleaks/Trufflehog adapters will (correctly) flag it — that's not a false positive, rotate it.
+
 ---
 
 ## Integrated Tools
 
-| Tool | Type | Gate | Status |
+| Tool | Type | Gate | Sandboxed? |
 |---|---|---|---|
-| Semgrep | SAST | none | ✅ Live-tested |
-| Bandit | Python SAST | none | ✅ Live-tested |
-| Gitleaks | Secrets | none | ✅ Live-tested |
-| Trivy | Dependency CVEs | none | ✅ Live-tested |
-| Nmap | Recon | authorization | ✅ Live-tested |
-| Nuclei | DAST | authorization | ✅ Built |
-| Nikto | Web misconfig | authorization | ✅ Built (Perl-based, needs Strawberry Perl on Windows) |
-| OWASP ZAP | DAST | authorization + running daemon | ✅ Live-tested (passive mode) |
-| ffuf | Content discovery | authorization | ✅ Live-tested |
-| sqlmap | Exploitation | authorization + explicit `exploit` command | ✅ Live-tested against a real injectable endpoint |
-| Metasploit | Exploitation | — | ❌ Not auto-wired, by design |
+| Semgrep | SAST | none | Yes |
+| Bandit | Python SAST | none | Yes |
+| Gitleaks | Secrets | none | Yes |
+| Trufflehog | Secrets (+ live-credential verification) | none | Yes |
+| Trivy | Dependency CVEs | none | Yes |
+| Retire.js | Frontend dependency CVEs | none | Yes |
+| ESLint | JS/TS SAST (security ruleset only) | none | Yes |
+| ast-grep | Structural pattern SAST | none | Yes |
+| httpx | Recon / tech fingerprint | authorization | Yes |
+| katana | Web crawler | authorization | Yes |
+| ffuf | Content discovery | authorization | No — host-only |
+| Nmap | Port/service recon | authorization | No — host-only |
+| Nuclei | Template-based DAST | authorization | No — host-only |
+| Nikto | Web misconfig | authorization | No — host-only (Perl-based, needs Strawberry Perl on Windows) |
+| OWASP ZAP | DAST | authorization + running daemon | No — host-only |
+| sqlmap | Exploitation | authorization + explicit `exploit` command | No — host-only |
+| jwt_tool | JWT weakness testing | explicit `exploit` command | No — host-only |
+| Metasploit | Exploitation | — | Not auto-wired, by design |
+| Chromium / agent-browser | Browser automation | `--with-browser` build flag | Yes (installed, not yet used by any adapter) |
 
 ---
 
@@ -242,41 +314,50 @@ DEXTER_LLM_KEYS=key-one,key-two,key-three
 
 Dexter treats "authorized targets only" as enforced behavior, not a suggestion:
 
-- Live-target tools (Nmap, Nuclei, Nikto, ZAP, ffuf) refuse to run against anything not explicitly added via `dexter authorize <target>`.
-- Exploitation-tier tools (sqlmap) are kept **structurally outside** the automatic scan registry — a dedicated test asserts this at the code level, so it can't silently regress.
-- Exploit-tier actions require an explicit, separate command and a typed confirmation — never triggered by a normal `scan`.
+- Live-target tools (Nmap, Nuclei, Nikto, ZAP, ffuf, httpx, katana) refuse to run against anything not explicitly added via `dexter authorize <target>`.
+- Exploitation-tier tools (sqlmap, jwt_tool) are kept **structurally outside** the automatic scan registry — a dedicated test asserts this at the code level, so it can't silently regress.
+- Exploit-tier actions require an explicit, separate command — never triggered by a normal `scan`.
 - Metasploit has no automatic invocation at all, because there is no safe generic "just run it" behavior for an exploit framework the way there is for a scanner.
+- The Docker sandbox adds a further isolation layer: even an authorized scan's tools run inside a disposable container with the target mounted read-only, not directly against your host filesystem.
+
+**Only test systems you own or have explicit written permission to assess** — this applies identically whether a scan runs sandboxed or on the host.
 
 ---
 
 ## Repository Layout
 
 ```
+containers/
+└── Dockerfile            sandbox image (Kali-based; semgrep, bandit, gitleaks,
+                           trivy, trufflehog, httpx, katana, ffuf, retire, eslint,
+                           ast-grep, tree-sitter, jwt_tool; Chromium optional)
 src/dexter/
-├── cli.py              one-shot CLI entry point
-├── dashboard.py         wakeupdexter interactive REPL
-├── loop.py               the SAVR loop itself
+├── cli.py                one-shot CLI entry point
+├── dashboard.py          wakeupdexter interactive REPL
+├── loop.py               the SAVR loop itself; opens/tears down the sandbox per target
 ├── agentic_verify.py     ReAct tool-calling verification agent
-├── tools.py              external tool adapters + registry
+├── tools.py              external tool adapters + registry (sandbox-aware)
+├── sandbox.py            per-run Docker container lifecycle
 ├── scanner.py            local static-analysis rules
-├── provider_pool.py     LLM key rotation + tool-calling support
+├── provider_pool.py      LLM key rotation + tool-calling support
 ├── authorization.py      authorized-target list
 ├── report.py             human-language report generation
 ├── env_file.py           ~/.dexter/.env loader
 ├── models.py / storage.py
 └── wordlists/common.txt  bundled ffuf content-discovery wordlist
-tests/                    43 tests, isolated from network/tool availability
+tests/                    65 tests, isolated from network/tool/Docker availability
 ```
 
 ---
 
 ## Roadmap
 
-- [ ] Docker sandbox isolation for tool execution
+- [ ] Port Nmap, Nuclei, Nikto, ffuf, sqlmap, jwt_tool into the sandbox image for full tool parity in containerized mode
 - [ ] Cross-tool finding correlation & deduplication
 - [ ] Agentic Analyze and Refine stages
 - [ ] Multi-agent coordinator spawning per-stage subagents
 - [ ] Historical run diffing across scans
+- [ ] Browser-driven verification using the (already installable) Chromium/agent-browser sandbox tooling
 - [ ] Metasploit resource-script passthrough
 - [ ] Revisit the web dashboard (currently on `backup-web-platform`)
 

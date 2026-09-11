@@ -275,3 +275,169 @@ def test_sqlmap_no_injection_found(tmp_path: Path, monkeypatch):
 def test_run_single_exploit_rejects_unknown_tool():
     with pytest.raises(ValueError):
         tools.run_single_exploit("metasploit", "http://t", "id")
+
+
+def test_jwt_tool_registered_as_exploit_tool():
+    assert "jwt_tool" in tools.EXPLOIT_TOOLS
+    assert "jwt_tool" not in tools.FILE_ADAPTERS
+    assert "jwt_tool" not in tools.URL_ADAPTERS
+
+
+def test_jwt_tool_requires_a_token(monkeypatch):
+    monkeypatch.setattr(tools, "_which", lambda binary: "/usr/bin/jwt_tool")
+    with pytest.raises(ValueError):
+        tools.run_jwt_tool("")
+
+
+def test_trufflehog_flags_verified_secret_as_critical(monkeypatch):
+    line = json.dumps({
+        "DetectorName": "AWS",
+        "Verified": True,
+        "Redacted": "AKIA************",
+        "SourceMetadata": {"Data": {"Filesystem": {"file": "config.py"}}},
+        "line": 12,
+    })
+    monkeypatch.setattr(tools, "_which", lambda binary: "/usr/bin/trufflehog")
+    monkeypatch.setattr(tools, "_run", lambda cmd, timeout=300: (0, line, ""))
+
+    findings = tools.run_trufflehog("/some/repo")
+
+    assert len(findings) == 1
+    assert findings[0].severity == "critical"
+    assert findings[0].verification == "verified"
+    assert findings[0].file == "config.py"
+
+
+def test_trufflehog_unverified_secret_is_high_not_critical(monkeypatch):
+    line = json.dumps({
+        "DetectorName": "Generic API Key",
+        "Verified": False,
+        "Redacted": "xxxx",
+        "SourceMetadata": {"Data": {"Filesystem": {"file": "app.js"}}},
+    })
+    monkeypatch.setattr(tools, "_which", lambda binary: "/usr/bin/trufflehog")
+    monkeypatch.setattr(tools, "_run", lambda cmd, timeout=300: (0, line, ""))
+
+    findings = tools.run_trufflehog("/some/repo")
+
+    assert findings[0].severity == "high"
+    assert findings[0].verification == "unverified"
+
+
+def test_retire_parses_vulnerable_component(tmp_path: Path, monkeypatch):
+    target = "/some/frontend"
+    report = {
+        "data": [
+            {
+                "file": "js/jquery.js",
+                "results": [
+                    {
+                        "component": "jquery",
+                        "version": "1.9.0",
+                        "vulnerabilities": [
+                            {
+                                "severity": "medium",
+                                "below": "1.12.0",
+                                "identifiers": {"CVE": ["CVE-2015-9251"], "summary": "XSS in jQuery <1.12.0"},
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+    report_path = tmp_path / f"dexter_retire_{abs(hash(target))}.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    monkeypatch.setattr(tools, "_which", lambda binary: "/usr/bin/retire")
+    monkeypatch.setattr(tools, "_run", lambda cmd, timeout=300: (0, "", ""))
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+
+    findings = tools.run_retire(target)
+
+    assert len(findings) == 1
+    assert "jquery" in findings[0].title
+    assert "CVE-2015-9251" in findings[0].title
+    assert findings[0].severity == "medium"
+
+
+def test_httpx_skipped_without_authorization(monkeypatch):
+    monkeypatch.setattr(tools, "_which", lambda binary: "/usr/bin/httpx")
+
+    findings = tools.run_httpx("https://not-authorized.test")
+
+    assert len(findings) == 1
+    assert findings[0].source == "dexter-guard"
+
+
+def test_httpx_reports_technology_fingerprint(monkeypatch):
+    line = json.dumps({"url": "https://ok.test", "webserver": "nginx", "tech": ["PHP", "WordPress"]})
+    monkeypatch.setattr(tools, "_which", lambda binary: "/usr/bin/httpx")
+    monkeypatch.setattr(tools, "is_authorized", lambda t: True)
+    monkeypatch.setattr(tools, "_run", lambda cmd, timeout=300: (0, line, ""))
+
+    findings = tools.run_httpx("https://ok.test")
+
+    assert len(findings) == 1
+    assert findings[0].severity == "low"
+    assert "nginx" in findings[0].evidence
+
+
+def test_katana_only_surfaces_sensitive_looking_paths(monkeypatch):
+    lines = "\n".join([
+        json.dumps({"request": {"endpoint": "https://ok.test/home"}}),        # noise, should be dropped
+        json.dumps({"request": {"endpoint": "https://ok.test/.env"}}),        # sensitive, should be kept
+    ])
+    monkeypatch.setattr(tools, "_which", lambda binary: "/usr/bin/katana")
+    monkeypatch.setattr(tools, "is_authorized", lambda t: True)
+    monkeypatch.setattr(tools, "_run", lambda cmd, timeout=300: (0, lines, ""))
+
+    findings = tools.run_katana("https://ok.test")
+
+    assert len(findings) == 1
+    assert ".env" in findings[0].evidence
+
+
+def test_eslint_flags_eval_usage(monkeypatch):
+    payload = json.dumps([{
+        "filePath": "src/app.js",
+        "messages": [{"ruleId": "no-eval", "severity": 2, "message": "eval is dangerous", "line": 10}],
+    }])
+    monkeypatch.setattr(tools, "_which", lambda binary: "/usr/bin/eslint")
+    monkeypatch.setattr(tools, "_run", lambda cmd, timeout=300: (1, payload, ""))
+    monkeypatch.setattr(tools.Path, "write_text", lambda self, *a, **k: None)
+    monkeypatch.setattr(tools.Path, "unlink", lambda self, *a, **k: None)
+
+    findings = tools.run_eslint("/some/frontend")
+
+    assert len(findings) == 1
+    assert findings[0].severity == "high"
+    assert "no-eval" in findings[0].title
+
+
+def test_ast_grep_matches_structural_pattern(monkeypatch):
+    match = [{"file": "app.py", "range": {"start": {"line": 4}}, "text": "eval(user_input)"}]
+
+    def fake_run(cmd, timeout=300):
+        if "python" in cmd:
+            return 0, json.dumps(match), ""
+        return 0, "[]", ""
+
+    monkeypatch.setattr(tools, "_which", lambda binary: "/usr/bin/ast-grep")
+    monkeypatch.setattr(tools, "_run", fake_run)
+
+    findings = tools.run_ast_grep("/some/repo")
+
+    assert any(f.file == "app.py" and f.line == 5 for f in findings)  # 0-indexed -> 1-indexed
+
+
+def test_jwt_tool_parses_vulnerable_output(monkeypatch):
+    output = "Testing alg=none ... VULNERABLE - server accepted unsigned token\nOK - other test passed\n"
+    monkeypatch.setattr(tools, "_which", lambda binary: "/usr/bin/jwt_tool")
+    monkeypatch.setattr(tools, "_run", lambda cmd, timeout=300: (0, output, ""))
+
+    findings = tools.run_jwt_tool("eyJhbGciOiJub25lIn0.e30.")
+
+    assert len(findings) == 1
+    assert findings[0].severity == "high"
+    assert findings[0].cwe == "CWE-347"
