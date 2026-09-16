@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Callable
 
 from .agentic_verify import agentic_verify
+from .github_fetch import fetch_github_repo, is_github_repo_url
 from .llm import enrich
 from .models import Finding, Run
+from .provider_pool import call_llm
 from .sandbox import Sandbox, sandbox_enabled, set_active
 from .scanner import scan_target
 from .tools import run_adapters
@@ -89,6 +92,80 @@ def correlate(findings: list[Finding]) -> list[Finding]:
     return merged
 
 
+REFINE_SYSTEM_PROMPT = (
+    "You are reviewing a full set of security findings from one scan, AFTER "
+    "each was individually verified. Your job is to reason across the whole "
+    "set together — not any single finding in isolation.\n\n"
+    "Look for findings that reinforce or contradict each other (e.g. two "
+    "findings pointing at the same root cause via different paths, or a "
+    "'debug mode enabled' finding that changes how seriously to weigh a "
+    "nearby secret). For each such relationship, suggest a small confidence "
+    "adjustment with a one-sentence reason. Only adjust when you have real "
+    "cross-finding evidence — do not just re-restate a finding's own "
+    "description as a reason.\n\n"
+    'Respond with ONLY a JSON object: {"adjustments": '
+    '[{"index": <int>, "confidence_delta": <-0.3 to 0.3>, "reason": "<short, plain language>"}], '
+    '"summary": "<one short paragraph on what the findings mean together>"}. '
+    "Never invent a finding or an index that wasn't given to you."
+)
+
+
+def _agentic_refine(findings: list[Finding], instructions: str) -> dict | None:
+    if not findings:
+        return None
+    payload = [
+        {
+            "index": i,
+            "title": f.title,
+            "severity": f.severity,
+            "category": f.category,
+            "confidence": f.confidence,
+            "verification": f.verification,
+            "file": f.file,
+            "line": f.line,
+        }
+        for i, f in enumerate(findings)
+    ]
+    messages = [
+        {"role": "system", "content": REFINE_SYSTEM_PROMPT},
+        {"role": "user", "content": json.dumps({"instructions": instructions, "findings": payload})},
+    ]
+    result = call_llm(messages)
+    if result.provider == "none" or not result.text:
+        return None
+    cleaned = result.text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:]
+    try:
+        return json.loads(cleaned.strip())
+    except json.JSONDecodeError:
+        return None
+
+
+def _apply_refine_result(findings: list[Finding], result: dict) -> None:
+    for adjustment in result.get("adjustments") or []:
+        if not isinstance(adjustment, dict):
+            continue
+        index = adjustment.get("index")
+        if not isinstance(index, int) or not (0 <= index < len(findings)):
+            continue
+        try:
+            delta = float(adjustment.get("confidence_delta", 0))
+        except (TypeError, ValueError):
+            continue
+        # Hard safety clamp regardless of what the model says — a single
+        # cross-finding observation should nudge confidence, not flip a
+        # verdict outright.
+        delta = max(-0.3, min(0.3, delta))
+        finding = findings[index]
+        finding.confidence = max(0.05, min(0.98, finding.confidence + delta))
+        reason = adjustment.get("reason")
+        if reason:
+            finding.description = f"{finding.description}\n\nRefine: {reason}"
+
+
 def _looks_like_placeholder(evidence: str) -> bool:
     lowered = evidence.lower()
     return any(marker in lowered for marker in PLACEHOLDER_MARKERS)
@@ -136,6 +213,8 @@ def _verify(finding: Finding, on_step: StageCallback | None = None) -> None:
         if result.get("reasoning"):
             finding.description = f"{finding.description}\n\nAI verification: {result['reasoning']}"
     else:
+        if on_step:
+            on_step("no usable AI verdict (unreachable or unparseable) — using offline heuristic")
         _fallback_verify_heuristic(finding)
     finding.validated = finding.verification == "verified"
 
@@ -166,6 +245,12 @@ def run_savr(
     stage("scan")
     findings: list[Finding] = []
     for target in targets:
+        if is_github_repo_url(target):
+            try:
+                target = fetch_github_repo(target, on_step=lambda s: stage(f"scan:{s}"))
+            except (ValueError, RuntimeError) as exc:
+                stage(f"scan:github fetch failed — {exc}")
+                continue
         findings.extend(scan_target(target))
         box: Sandbox | None = None
         if sandbox_enabled():
@@ -197,18 +282,27 @@ def run_savr(
         _verify(finding, on_step=lambda step, f=finding: stage(f"verify:{f.title[:24]} → {step}"))
 
     stage("refine")
-    keywords = [w.strip(".,").lower() for w in instructions.split() if len(w) > 3]
-    already_refined: set[int] = set()
-    for _ in range(MAX_REFINE_ITERATIONS):
-        changed = False
-        for finding in run.findings:
-            if id(finding) in already_refined:
-                continue
-            if _refine_once(finding, keywords):
-                already_refined.add(id(finding))
-                changed = True
-        if not changed:
-            break
+    refine_result = _agentic_refine(run.findings, instructions)
+    if refine_result:
+        _apply_refine_result(run.findings, refine_result)
+        if refine_result.get("summary"):
+            stage(f"refine:{refine_result['summary'][:150]}")
+    else:
+        # No LLM reachable (or it returned something unparseable) — same
+        # deterministic keyword-matching behavior as before agentic refine
+        # existed, so Dexter still works fully offline.
+        keywords = [w.strip(".,").lower() for w in instructions.split() if len(w) > 3]
+        already_refined: set[int] = set()
+        for _ in range(MAX_REFINE_ITERATIONS):
+            changed = False
+            for finding in run.findings:
+                if id(finding) in already_refined:
+                    continue
+                if _refine_once(finding, keywords):
+                    already_refined.add(id(finding))
+                    changed = True
+            if not changed:
+                break
 
     stage("report")
     run.summary = enrich([finding.to_dict() for finding in run.findings], instructions)

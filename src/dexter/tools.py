@@ -17,6 +17,7 @@ from xml.etree import ElementTree
 
 from .authorization import is_authorized
 from .models import Finding
+from .progress import Spinner
 from . import sandbox
 
 SEVERITY_MAP = {
@@ -52,12 +53,15 @@ def _run(cmd: list[str], timeout: int = 300) -> tuple[int, str, str]:
     inside that container instead of on the host — any argument that points
     inside the sandboxed target directory is rewritten to /workspace first.
     Otherwise this behaves exactly as before (host subprocess)."""
+    label = cmd[0] if cmd else "tool"
     box = sandbox.get_active()
     if box is not None:
         translated = [sandbox.to_workspace_path(box, arg) for arg in cmd]
-        return box.exec(translated, timeout=timeout)
+        with Spinner(f"{label} (sandboxed)"):
+            return box.exec(translated, timeout=timeout)
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        with Spinner(label):
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return result.returncode, result.stdout, result.stderr
     except FileNotFoundError:
         return -1, "", "binary not found"
@@ -455,7 +459,13 @@ def run_nuclei(target: str) -> list[Finding]:
         return []
     if not is_authorized(target):
         return [_authorization_required(target, "nuclei")]
-    _, out, _ = _run([binary, "-u", target, "-jsonl", "-silent"], timeout=300)
+    # Nuclei's default template set is thousands of templates and can take
+    # 10-30+ minutes unscoped. Default to critical/high/medium severity only
+    # — override with DEXTER_NUCLEI_SEVERITY (e.g. "critical,high,medium,low,info"
+    # for the full unscoped run) if you specifically want everything.
+    severity = os.environ.get("DEXTER_NUCLEI_SEVERITY", "critical,high,medium")
+    cmd = [binary, "-u", target, "-jsonl", "-silent", "-severity", severity, "-rate-limit", "150", "-timeout", "5"]
+    _, out, _ = _run(cmd, timeout=300)
     findings = []
     for line in out.splitlines():
         line = line.strip()
@@ -831,15 +841,42 @@ def is_installed(name: str) -> bool:
     return _which(name) is not None
 
 
+INSTALL_HINTS = {
+    "semgrep": "pip install semgrep",
+    "bandit": "pip install bandit",
+    "gitleaks": "https://github.com/gitleaks/gitleaks/releases",
+    "trivy": "https://github.com/aquasecurity/trivy/releases (or: winget install AquaSecurity.Trivy)",
+    "trufflehog": "https://github.com/trufflesecurity/trufflehog/releases",
+    "retire": "npm install -g retire",
+    "eslint": "npm install -g eslint",
+    "ast-grep": "npm install -g @ast-grep/cli",
+    "nuclei": "https://github.com/projectdiscovery/nuclei/releases",
+    "nikto": "https://github.com/sullo/nikto (Perl-based; needs Strawberry Perl on Windows)",
+    "nmap": "https://nmap.org/download.html",
+    "zap": "https://www.zaproxy.org/download/ (also needs a running daemon — see README)",
+    "ffuf": "https://github.com/ffuf/ffuf/releases",
+    "httpx": "https://github.com/projectdiscovery/httpx/releases",
+    "katana": "https://github.com/projectdiscovery/katana/releases",
+    "sqlmap": "pip install sqlmap",
+    "jwt_tool": "git clone https://github.com/ticarpi/jwt_tool",
+}
+
+
 def tool_status() -> list[dict]:
     def kind(name: str) -> str:
         if name in FILE_ADAPTERS:
             return "file/dir"
+        if name in EXPLOIT_TOOLS:
+            return "exploit-tier (dexter exploit only)"
         if name == "zap":
             return "live URL (requires authorization + a running daemon)"
         return "live host/URL (requires authorization)"
 
-    return [{"name": name, "installed": is_installed(name), "target_kind": kind(name)} for name in ALL_ADAPTERS]
+    all_names = list(ALL_ADAPTERS) + list(EXPLOIT_TOOLS)
+    return [
+        {"name": name, "installed": is_installed(name), "target_kind": kind(name), "install": INSTALL_HINTS.get(name, "")}
+        for name in all_names
+    ]
 
 
 def run_adapters(target: str, on_tool: Callable[[str], None] | None = None) -> list[Finding]:

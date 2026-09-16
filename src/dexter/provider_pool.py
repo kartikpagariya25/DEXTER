@@ -9,6 +9,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from .progress import Spinner
 from .storage import data_dir
 
 DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
@@ -75,8 +76,9 @@ def _chat_completion(base_url: str, api_key: str | None, model: str, messages: l
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     request = urllib.request.Request(f"{base_url}/chat/completions", data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
-    with urllib.request.urlopen(request, timeout=30) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    with Spinner("thinking"):
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
     return payload["choices"][0]["message"]
 
 

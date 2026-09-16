@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .provider_pool import call_llm
+from . import verify_cache
 
 MAX_TOOL_ITERATIONS = 4
 
@@ -57,9 +58,11 @@ VERIFY_TOOLS = [
 SYSTEM_PROMPT = (
     "You are a security analyst verifying ONE static-analysis finding. You may call tools "
     "to inspect the surrounding code before deciding — use them when they would change your "
-    "answer, not by default. When you are done investigating, respond with ONLY a JSON object "
-    'and nothing else: {"verdict": "verified" | "false-positive-suspected" | "needs-manual-review", '
-    '"confidence": <0.0 to 1.0>, "reasoning": "<one sentence, plain language>"}. '
+    "answer, not by default. When you are done investigating, respond with a JSON object "
+    '(it is fine if you add a sentence before or after it, it will be extracted): '
+    '{"verdict": "verified" | "false-positive-suspected" | "needs-manual-review", '
+    '"confidence": <0.0 to 1.0>, "reasoning": "<2-3 sentences: what you checked, what you found, and why '
+    'it changed or confirmed your assessment. Plain language, no jargon.>"}. '
     "Be decisive once you have enough context — do not call more than a couple of tools."
 )
 
@@ -127,12 +130,20 @@ def _parse_verdict(text: str) -> dict[str, Any] | None:
         cleaned = cleaned.strip("`")
         if cleaned.lower().startswith("json"):
             cleaned = cleaned[4:]
+    cleaned = cleaned.strip()
+    # Real models frequently wrap the JSON in a sentence even when told not
+    # to ("Here's my analysis: {...}") — extract the first {...} block
+    # instead of requiring the whole response to be clean JSON.
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        cleaned = cleaned[start:end + 1]
     try:
-        parsed = json.loads(cleaned.strip())
+        parsed = json.loads(cleaned)
         return {
             "verdict": parsed.get("verdict", "needs-manual-review"),
             "confidence": float(parsed.get("confidence", 0.5)),
-            "reasoning": str(parsed.get("reasoning", ""))[:300],
+            "reasoning": str(parsed.get("reasoning", ""))[:600],
         }
     except (json.JSONDecodeError, ValueError, TypeError):
         return None
@@ -145,6 +156,12 @@ def agentic_verify(finding_dict: dict[str, Any], root: str, on_step: Callable[[s
     back to the deterministic heuristic in that case, never treat None as
     a verdict of its own).
     """
+    cached = verify_cache.get(finding_dict)
+    if cached is not None:
+        if on_step:
+            on_step("cache hit — reusing prior verification, no LLM call")
+        return cached
+
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": json.dumps({
@@ -166,7 +183,10 @@ def agentic_verify(finding_dict: dict[str, Any], root: str, on_step: Callable[[s
         last_text = message.get("content") or ""
 
         if not tool_calls:
-            return _parse_verdict(last_text)
+            verdict = _parse_verdict(last_text)
+            if verdict is not None:
+                verify_cache.put(finding_dict, verdict)
+            return verdict
 
         messages.append(message)
         for call in tool_calls:
@@ -180,4 +200,7 @@ def agentic_verify(finding_dict: dict[str, Any], root: str, on_step: Callable[[s
             output = _execute_tool(root, fn.get("name", ""), args)
             messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": output[:2000]})
 
-    return _parse_verdict(last_text)  # circuit breaker hit — use whatever the model last said, if parseable
+    verdict = _parse_verdict(last_text)  # circuit breaker hit — use whatever the model last said, if parseable
+    if verdict is not None:
+        verify_cache.put(finding_dict, verdict)
+    return verdict

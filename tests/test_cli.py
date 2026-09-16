@@ -12,6 +12,8 @@ def test_local_scan_persists_finding(tmp_path: Path, monkeypatch, capsys):
     assert main(["-n", "--target", str(tmp_path), "--run-name", "fixture"]) == 1
     output = capsys.readouterr().out
     assert "Hard-coded secret" in output
+    assert "verified" in output
+    assert str(target) in output or target.name in output
     assert (tmp_path / ".dexter" / "runs" / "fixture" / "run.json").exists()
 
 

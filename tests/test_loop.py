@@ -82,6 +82,68 @@ def test_refine_boosts_confidence_once_not_per_iteration(tmp_path: Path, monkeyp
     assert finding.confidence == 0.55
 
 
+def test_agentic_refine_applies_cross_finding_adjustment():
+    from dexter.loop import _agentic_refine, _apply_refine_result
+    from dexter.models import Finding
+
+    f1 = Finding("Debug mode enabled", "medium", "OWASP", "d", "e", "r", "/a.py", 1, None, None, source="local-rule", confidence=0.9)
+    f2 = Finding("Hard-coded secret", "high", "OWASP", "d", "e", "r", "/a.py", 2, None, None, source="local-rule", confidence=0.6)
+    fake_result = {"adjustments": [{"index": 1, "confidence_delta": 0.2, "reason": "corroborating context"}], "summary": "test"}
+
+    _apply_refine_result([f1, f2], fake_result)
+
+    assert f2.confidence == 0.8
+    assert "Refine: corroborating context" in f2.description
+    assert f1.confidence == 0.9  # untouched, no adjustment targeted it
+
+
+def test_agentic_refine_clamps_extreme_delta():
+    from dexter.loop import _apply_refine_result
+    from dexter.models import Finding
+
+    f = Finding("x", "high", "y", "d", "e", "r", "/a.py", 1, None, None, source="local-rule", confidence=0.5)
+    _apply_refine_result([f], {"adjustments": [{"index": 0, "confidence_delta": 999, "reason": "x"}]})
+
+    assert f.confidence == 0.8  # clamped to the real +0.3 max, not the attempted +999
+
+
+def test_agentic_refine_ignores_out_of_range_index():
+    from dexter.loop import _apply_refine_result
+    from dexter.models import Finding
+
+    f = Finding("x", "high", "y", "d", "e", "r", "/a.py", 1, None, None, source="local-rule", confidence=0.5)
+    _apply_refine_result([f], {"adjustments": [{"index": 5, "confidence_delta": 0.3, "reason": "x"}]})
+
+    assert f.confidence == 0.5  # unchanged, index 5 doesn't exist
+
+
+def test_agentic_refine_returns_none_when_no_llm(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("DEXTER_LLM_KEYS", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "http://127.0.0.1:1")
+    from dexter.loop import _agentic_refine
+    from dexter.models import Finding
+
+    f = Finding("x", "high", "y", "d", "e", "r", "/a.py", 1, None, None, source="local-rule", confidence=0.5)
+
+    assert _agentic_refine([f], "") is None
+
+
+def test_refine_falls_back_to_keyword_matching_offline(tmp_path: Path, monkeypatch):
+    # Regression: with no LLM reachable, refine behavior must match exactly
+    # what it did before agentic refine existed.
+    target = tmp_path / "app.py"
+    target.write_text('query = "SELECT * FROM users WHERE id=" + user_id\n', encoding="utf-8")
+    monkeypatch.setattr("dexter.loop.run_adapters", lambda target, on_tool=None: [])
+    monkeypatch.delenv("DEXTER_LLM_KEYS", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+
+    run = run_savr([str(tmp_path)], "prioritize injection issues", "standard", "test-run")
+    finding = run.findings[0]
+
+    assert finding.confidence == 0.55  # same value as the original pre-agentic test
+
+
 def test_stage_callback_fires_in_order(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("DEXTER_LLM_KEYS", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)

@@ -10,9 +10,9 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import __version__
+from . import __version__, verify_cache
 from .authorization import authorize, is_authorized, list_authorized, revoke
-from .dashboard import launch
+from .dashboard import Theme, launch
 from .env_file import load_env
 from .loop import insight_summary, run_savr
 from .provider_pool import pool_status
@@ -60,6 +60,8 @@ def build_parser() -> argparse.ArgumentParser:
     sandbox_cmd = subparsers.add_parser("sandbox", help="Manage the Docker sandbox image used when DEXTER_SANDBOX=1")
     sandbox_cmd.add_argument("action", choices=["build", "status"])
     sandbox_cmd.add_argument("--with-browser", action="store_true", help="Also install Chromium + agent-browser (adds ~20-30 min; skip unless you need browser-driven checks)")
+    cache_cmd = subparsers.add_parser("cache", help="Manage the agentic-verify cache (avoids re-spending LLM calls on unchanged findings)")
+    cache_cmd.add_argument("action", choices=["status", "clear"])
     return parser
 
 
@@ -108,10 +110,10 @@ def serve(run: dict, host: str, port: int, no_open: bool) -> None:
 
 def _print_stage(name: str) -> None:
     if ":" in name:
-        stage, tool = name.split(":", 1)
-        print(f"   running {tool}...")
+        _, tool = name.split(":", 1)
+        print(f"   {Theme.dim}running {tool}...{Theme.reset}")
     else:
-        print(f"-> {name}")
+        print(f"{Theme.red}->{Theme.reset} {Theme.white}{name}{Theme.reset}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -150,8 +152,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "tools":
         for row in tool_status():
-            status = "installed" if row["installed"] else "not found on PATH"
-            print(f"{row['name']:<10} {status:<20} {row['target_kind']}")
+            status = "installed" if row["installed"] else "not found"
+            print(f"{row['name']:<10} {status:<12} {row['target_kind']}")
+            if not row["installed"] and row["install"]:
+                print(f"           → install: {row['install']}")
         return 0
     if args.command == "authorize":
         if args.list or not args.target:
@@ -178,6 +182,16 @@ def main(argv: list[str] | None = None) -> int:
             ok, _ = build_image(on_line=print, with_browser=args.with_browser)
             print("\nBuild succeeded." if ok else "\nBuild FAILED — see output above.")
             return 0 if ok else 1
+    if args.command == "cache":
+        if args.action == "status":
+            entries = len(verify_cache._load())
+            print(f"agentic-verify cache: {entries} entr{'y' if entries == 1 else 'ies'} stored")
+            print(f"location: {verify_cache._cache_path()}")
+            return 0
+        if args.action == "clear":
+            removed = verify_cache.clear()
+            print(f"Cleared {removed} cached verification(s).")
+            return 0
     if args.command == "exploit":
         if args.tool == "sqlmap" and not args.param:
             parser.error("sqlmap requires --param (exact parameter name to test — no blind-fuzzing a whole target)")
@@ -208,11 +222,31 @@ def main(argv: list[str] | None = None) -> int:
     path = save_run(run)
     print(f"Run saved: {path}")
     print(insight_summary(run))
-    for finding in run.findings:
-        print(f"[{finding.severity.upper()}] {finding.title} ({finding.verification}, confidence {finding.confidence:.2f}): {finding.evidence}")
+    if run.findings:
+        print()
+        _print_findings_table(run.findings)
     if not args.non_interactive:
         print(f"View with: dexter view {run_id}")
     return 1 if run.findings else 0
+
+
+VERIFICATION_ICON = {"verified": "✓", "needs-manual-review": "?", "false-positive-suspected": "~"}
+VERIFICATION_COLOR = {"verified": Theme.green, "needs-manual-review": Theme.ember, "false-positive-suspected": Theme.dim}
+
+
+def _print_findings_table(findings: list) -> None:
+    ranked = sorted(findings, key=lambda f: (f.cvss or 0, f.confidence), reverse=True)
+    sev_width = max(len(f.severity) for f in ranked)
+    for finding in ranked:
+        sev_color = Theme.sev(finding.severity)
+        v_color = VERIFICATION_COLOR.get(finding.verification, Theme.grey)
+        v_icon = VERIFICATION_ICON.get(finding.verification, "-")
+        sev_tag = f"{sev_color}{finding.severity.upper():<{sev_width}}{Theme.reset}"
+        v_tag = f"{v_color}{v_icon} {finding.verification}{Theme.reset}"
+        conf_tag = f"{Theme.muted}conf {finding.confidence:.2f}{Theme.reset}"
+        print(f"[{sev_tag}] {Theme.white}{finding.title}{Theme.reset}  {v_tag}  {conf_tag}")
+        location = f"{finding.file}:{finding.line}" if finding.file else finding.category
+        print(f"   {Theme.dim}{location} — {finding.evidence[:100]}{Theme.reset}")
 
 
 if __name__ == "__main__":

@@ -104,15 +104,17 @@ BANNER_LINES = [
 ]
 
 def _render_banner() -> None:
-    width = max(len(line) for line in BANNER_LINES)
+    banner_width = max(len(line) for line in BANNER_LINES)
+    cols, _ = _term_size()
+    left_pad = " " * max(0, (cols - banner_width) // 2)
     for line in BANNER_LINES:
         out = []
         for x, ch in enumerate(line):
             if ch == " ":
                 out.append(" ")
             else:
-                out.append(f"{_gradient_color(x / width)}{ch}{Theme.reset}")
-        print("".join(out))
+                out.append(f"{_gradient_color(x / banner_width)}{ch}{Theme.reset}")
+        print(left_pad + "".join(out))
 
 
 def _enabled() -> bool:
@@ -250,7 +252,9 @@ def _render(findings: list[dict], runs: list[dict], target: str = "no target sel
         # Full banner only on the very first frame — redrawing a
         # giant ASCII header after every command reads as noisy duplication.
         _render_banner()
-        print(f"  {Theme.muted}local-first application security assessment{Theme.reset}")
+        subtitle = "local-first application security assessment"
+        cols, _ = _term_size()
+        print(" " * max(0, (cols - len(subtitle)) // 2) + f"{Theme.muted}{subtitle}{Theme.reset}")
     else:
         print(f"{Theme.red}{Theme.bold}▶ DEXTER{Theme.reset}  {Theme.muted}local-first application security assessment{Theme.reset}")
 

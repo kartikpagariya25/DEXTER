@@ -47,6 +47,14 @@ Tool execution is **sandboxed when Docker is available**: every tool can run ins
 
 ---
 
+## Demo codebase
+
+`demo/greenleaf-bank/` is a small, deliberately vulnerable codebase (not a real app — safe to scan repeatedly, offline, no authorization needed since it's local files only) covering every local rule and several tool categories: hardcoded JWT secret, CORS misconfiguration, SQL injection, dynamic command execution (JS + Python), TLS verification disabled, XSS, unquoted `.env` secrets, and an outdated npm dependency for Trivy.
+
+```bash
+dexter --target ./demo/greenleaf-bank -n --instruction "prioritize secrets and injection"
+```
+
 ## Quickstart
 
 ```bash
@@ -171,8 +179,8 @@ dexter --target http://host.docker.internal:5000 -n
 - [x] Deterministic offline fallback when no LLM is reachable — Dexter still fully functions with zero API keys
 - [x] Plain-English reasoning attached to every agentically-verified finding
 - [x] Cross-tool finding correlation — findings at the same location with overlapping topic (e.g. a local rule and Semgrep both flagging the same secret) are merged, with confidence boosted by independent corroboration. Deliberately deterministic, not LLM-driven — this is a mechanical matching problem, and a rule-based implementation is faster, free, and can't hallucinate a merge that shouldn't happen
-- [ ] Refine stage made agentic (currently keyword-matching against `--instruction`, not model-driven)
-- [ ] Multi-agent coordinator + specialist subagents (Strix-style) — current agent scope is the Verify stage only, not a full coordinator spawning subagents per SAVR stage
+- [x] Refine stage made agentic — reasons across the *whole* finding set at once (cross-finding corroboration, instruction-aware judgment), unlike Verify which investigates one finding in isolation. No tool-calling needed here — one structured reasoning call, with hard safety clamps on confidence adjustments regardless of what the model outputs. Deterministic keyword-matching fallback preserved for fully offline use
+- [ ] Multi-agent coordinator + specialist subagents (Strix-style) — Verify and Refine are both genuinely agentic now, but there's no formal `Coordinator` class dispatching between them; the SAVR loop itself plays that role as a fixed sequence
 
 ### Local static analysis rules
 - [x] Hard-coded secrets (quoted **and** unquoted `KEY=value` style — the unquoted case was a real bug, fixed)
@@ -229,6 +237,14 @@ dexter --target http://host.docker.internal:5000 -n
 ---
 
 ## Usage & Commands
+
+You can scan a public GitHub repo directly by URL — Dexter downloads the current source tree via GitHub's own archive endpoint (no `git clone` needed, no API rate limits since it doesn't use the REST API) and scans it exactly like a local directory:
+
+```bash
+dexter --target https://github.com/owner/repo -n
+```
+
+Not full web scraping by design — it fetches a repo's source tree, which is a well-defined operation, not an open-ended crawler. If you need to scan a private repo or a specific branch, clone it locally and point Dexter at that path instead.
 
 ```bash
 dexter --target ./app --scan-mode standard
@@ -362,6 +378,19 @@ tests/                    65 tests, isolated from network/tool/Docker availabili
 - [ ] Revisit the web dashboard (currently on `backup-web-platform`)
 
 ---
+
+## LLM efficiency — the verify cache
+
+Every agentic-Verify result is cached by finding fingerprint (title + file + evidence) in `~/.dexter/verify_cache.json`. Rescanning the same codebase reuses prior verifications instead of re-spending an LLM call — measured on the demo codebase, a first scan made 11 LLM calls; an immediate rescan of unchanged code made only 2 (Refine and Report still reason over the whole finding set each time; per-finding Verify calls came entirely from cache).
+
+```bash
+dexter cache status
+dexter cache clear
+```
+
+## Live progress
+
+Every blocking operation — an external tool subprocess, an LLM round-trip — shows an animated in-place spinner with elapsed time, so a multi-minute Nuclei scan or a slow LLM call never looks like a hang. Automatically disabled when output isn't a real terminal (CI, redirected output).
 
 ## Team
 

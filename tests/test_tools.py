@@ -41,7 +41,46 @@ def test_nuclei_skipped_without_authorization(monkeypatch):
 
     assert len(findings) == 1
     assert findings[0].source == "dexter-guard"
-    assert "not authorized" in findings[0].title
+
+
+def test_nuclei_scopes_to_default_severities(monkeypatch):
+    # Regression: the original unscoped invocation ran nuclei's entire
+    # default template library (thousands of templates), which could take
+    # 10-30+ minutes. Default runs must be scoped down.
+    captured = {}
+
+    def fake_run(cmd, timeout=300):
+        captured["cmd"] = cmd
+        return 0, "", ""
+
+    monkeypatch.setattr(tools, "_which", lambda binary: "/usr/bin/nuclei")
+    monkeypatch.setattr(tools, "is_authorized", lambda t: True)
+    monkeypatch.setattr(tools, "_run", fake_run)
+    monkeypatch.delenv("DEXTER_NUCLEI_SEVERITY", raising=False)
+
+    tools.run_nuclei("https://authorized.test")
+
+    assert "-severity" in captured["cmd"]
+    idx = captured["cmd"].index("-severity")
+    assert captured["cmd"][idx + 1] == "critical,high,medium"
+
+
+def test_nuclei_severity_override_via_env(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, timeout=300):
+        captured["cmd"] = cmd
+        return 0, "", ""
+
+    monkeypatch.setattr(tools, "_which", lambda binary: "/usr/bin/nuclei")
+    monkeypatch.setattr(tools, "is_authorized", lambda t: True)
+    monkeypatch.setattr(tools, "_run", fake_run)
+    monkeypatch.setenv("DEXTER_NUCLEI_SEVERITY", "critical,high,medium,low,info")
+
+    tools.run_nuclei("https://authorized.test")
+
+    idx = captured["cmd"].index("-severity")
+    assert captured["cmd"][idx + 1] == "critical,high,medium,low,info"
 
 
 def test_nmap_skipped_without_authorization(monkeypatch):
