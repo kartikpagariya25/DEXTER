@@ -170,7 +170,7 @@ dexter --target http://host.docker.internal:5000 -n
 - [x] Circuit breaker on the tool-calling loop (max iterations, tested against a runaway-model scenario)
 - [x] Deterministic offline fallback when no LLM is reachable — Dexter still fully functions with zero API keys
 - [x] Plain-English reasoning attached to every agentically-verified finding
-- [ ] Analyze stage made agentic (cross-tool deduplication/correlation currently has no logic yet — findings from different tools on the same issue still show up as separate findings, e.g. Semgrep + Bandit + a local rule all flagging the same `debug=True` line)
+- [x] Cross-tool finding correlation — findings at the same location with overlapping topic (e.g. a local rule and Semgrep both flagging the same secret) are merged, with confidence boosted by independent corroboration. Deliberately deterministic, not LLM-driven — this is a mechanical matching problem, and a rule-based implementation is faster, free, and can't hallucinate a merge that shouldn't happen
 - [ ] Refine stage made agentic (currently keyword-matching against `--instruction`, not model-driven)
 - [ ] Multi-agent coordinator + specialist subagents (Strix-style) — current agent scope is the Verify stage only, not a full coordinator spawning subagents per SAVR stage
 
@@ -221,7 +221,7 @@ dexter --target http://host.docker.internal:5000 -n
 ### Not yet built
 - [ ] Full tool parity inside the sandbox — Nmap, Nuclei, Nikto, ffuf, ZAP, sqlmap, jwt_tool currently still run host-side even when `DEXTER_SANDBOX=1`; only the file-scanning tools + httpx/katana are containerized so far
 - [ ] Formal four-rung verifier ladder as a named, distinct structure (current Verify stage covers the same intent — deterministic check → agentic investigation → offline fallback — but isn't formalized into four explicit named rungs)
-- [ ] Cross-tool finding correlation/deduplication (Semgrep, Bandit, and a local rule flagging the same line currently show up as three findings, not one merged one)
+- [x] Cross-tool finding correlation/deduplication (findings from different tools on the same line/topic are now merged, with confidence boosted by corroboration)
 - [ ] Historical run diffing ("+2 high severity since last scan")
 - [ ] Web dashboard — exists on the `backup-web-platform` branch (FastAPI + Celery + Postgres + React), shelved in favor of the CLI-first direction, not deleted
 - [ ] Browser-driven verification (Chromium/agent-browser are installable in the sandbox via `--with-browser`, but no tool adapter uses them yet — needed for auth-flow/DOM-based-XSS checks that a static/HTTP-only tool can't see)
@@ -353,7 +353,7 @@ tests/                    65 tests, isolated from network/tool/Docker availabili
 ## Roadmap
 
 - [ ] Port Nmap, Nuclei, Nikto, ffuf, sqlmap, jwt_tool into the sandbox image for full tool parity in containerized mode
-- [ ] Cross-tool finding correlation & deduplication
+- [x] Cross-tool finding correlation & deduplication
 - [ ] Agentic Analyze and Refine stages
 - [ ] Multi-agent coordinator spawning per-stage subagents
 - [ ] Historical run diffing across scans

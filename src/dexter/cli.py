@@ -200,7 +200,11 @@ def main(argv: list[str] | None = None) -> int:
         if is_live_target(target) and not is_authorized(target):
             print(f"Note: {target} is not authorized — live-target tools (Nmap, Nuclei, Nikto, ZAP, ffuf) will be skipped. Run: dexter authorize {target}")
     run_id = safe_run_id(args.run_name or f"run-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
-    run = run_savr(targets, instructions, args.scan_mode, run_id, on_stage=_print_stage)
+    try:
+        run = run_savr(targets, instructions, args.scan_mode, run_id, on_stage=_print_stage)
+    except KeyboardInterrupt:
+        print("\nScan interrupted — no run was saved. Live-target tools (nuclei, ffuf, etc.) can take several minutes; let them finish or scope the target down if this keeps happening.")
+        return 130
     path = save_run(run)
     print(f"Run saved: {path}")
     print(insight_summary(run))

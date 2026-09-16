@@ -26,6 +26,69 @@ DETERMINISTIC_TITLES = {
 StageCallback = Callable[[str], None]
 
 
+SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+
+# Loose topic vocabulary used to decide whether two findings on the same
+# line are actually the same underlying issue (merge them) or coincidentally
+# co-located but unrelated (e.g. a debug flag next to a secret — keep both).
+TOPIC_KEYWORDS = ("secret", "password", "credential", "token", "jwt", "sql", "injection", "xss", "cors", "origin", "debug", "tls", "ssl", "vulnerable", "outdated", "cve")
+
+
+def _topics(finding: Finding) -> set[str]:
+    text = f"{finding.title} {finding.category} {finding.description}".lower()
+    return {kw for kw in TOPIC_KEYWORDS if kw in text}
+
+
+def _cluster_by_topic(group: list[Finding]) -> list[list[Finding]]:
+    clusters: list[list[Finding]] = []
+    for finding in group:
+        finding_topics = _topics(finding)
+        for cluster in clusters:
+            if any(_topics(existing) & finding_topics for existing in cluster):
+                cluster.append(finding)
+                break
+        else:
+            clusters.append([finding])
+    return clusters
+
+
+def _merge_cluster(cluster: list[Finding]) -> Finding:
+    primary = max(cluster, key=lambda f: (SEVERITY_RANK.get(f.severity, 0), f.confidence))
+    sources = sorted({f.source for f in cluster})
+    if len(sources) > 1:
+        # Independent tools agreeing is real corroborating evidence — this is
+        # the whole point of cross-tool correlation, not just tidier output.
+        primary.confidence = min(primary.confidence + 0.1 * (len(sources) - 1), 0.98)
+        primary.description = f"{primary.description}\n\nCross-confirmed independently by: {', '.join(sources)}."
+    return primary
+
+
+def correlate(findings: list[Finding]) -> list[Finding]:
+    """Merges findings from different tools describing the same underlying
+    issue at the same location. Deliberately deterministic, not LLM-driven —
+    this is a mechanical matching problem (same file, same line, related
+    topic), and a rule-based implementation is faster, free, and can't
+    hallucinate a merge that shouldn't happen."""
+    by_location: dict[tuple[str, int], list[Finding]] = {}
+    unlocated: list[Finding] = []
+    for finding in findings:
+        if not finding.file or not finding.line:
+            unlocated.append(finding)
+            continue
+        by_location.setdefault((finding.file, finding.line), []).append(finding)
+
+    merged: list[Finding] = list(unlocated)
+    for group in by_location.values():
+        if len({f.source for f in group}) == 1:
+            # Same tool flagging the same line twice is unusual and not what
+            # correlation is for — pass through unchanged.
+            merged.extend(group)
+            continue
+        for cluster in _cluster_by_topic(group):
+            merged.append(_merge_cluster(cluster) if len(cluster) > 1 else cluster[0])
+    return merged
+
+
 def _looks_like_placeholder(evidence: str) -> bool:
     lowered = evidence.lower()
     return any(marker in lowered for marker in PLACEHOLDER_MARKERS)
@@ -124,10 +187,10 @@ def run_savr(
     run.findings = findings
 
     stage("analyze")
-    # Base confidence per finding is already assigned by its source rule at
-    # scan time. This stage exists as a real, separate step so later tool
-    # adapters (Semgrep, Nuclei, etc.) have a place to cross-reference and
-    # deduplicate overlapping findings before verification runs.
+    before = len(run.findings)
+    run.findings = correlate(run.findings)
+    if len(run.findings) < before:
+        stage(f"analyze:merged {before - len(run.findings)} overlapping finding(s) from different tools")
 
     stage("verify")
     for finding in run.findings:

@@ -257,7 +257,7 @@ def _render(findings: list[dict], runs: list[dict], target: str = "no target sel
     _section("SESSION", w)
     print(_kv("Target", f"{Theme.white}{target[: w - 12]}{Theme.reset}"))
     print(_kv("Status", f"{Theme.white}{'FINDINGS DETECTED' if findings else 'READY'}{Theme.reset}"))
-    print(_kv("Engine", f"{Theme.grey}dexter core · groq analyst (optional){Theme.reset}"))
+    print(_kv("Engine", f"{Theme.grey}dexter core · agentic verify (LLM optional){Theme.reset}"))
 
     _section("RISK OVERVIEW", w)
     for level in ("critical", "high", "medium", "low"):
@@ -353,7 +353,11 @@ def _scan(target: str, instructions: str = "") -> list[dict]:
             print(f"{Theme.dark_red}  [{name.upper()}]{Theme.reset} {Theme.muted}{label}...{Theme.reset}")
 
     run_id = safe_run_id(f"run-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
-    run = run_savr([target], instructions, "standard", run_id, on_stage=on_stage)
+    try:
+        run = run_savr([target], instructions, "standard", run_id, on_stage=on_stage)
+    except KeyboardInterrupt:
+        print(f"\n{Theme.red}scan interrupted{Theme.reset} — no run was saved. Live-target tools can take several minutes.")
+        return []
     save_run(run)
     print(f"{Theme.green}✓{Theme.reset} {Theme.white}scan complete{Theme.reset} — {Theme.red}{len(run.findings)}{Theme.reset} finding(s)")
     print(f"{Theme.muted}{insight_summary(run)}{Theme.reset}\n")
@@ -371,7 +375,7 @@ def launch() -> int:
         try:
             w = _width()
             print()
-            print(f"{Theme.muted}scan <path> · runs · report · view · help · exit{Theme.reset}")
+            print(f"{Theme.muted}scan <path> · /tool <target> · authorize · exploit · pool · tools · runs · report · view · help · exit{Theme.reset}")
             command = _input_box(w).strip()
         except (EOFError, KeyboardInterrupt):
             print(f"\n{Theme.muted}session closed.{Theme.reset}")

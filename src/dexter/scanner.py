@@ -23,6 +23,11 @@ def _is_scannable(path: Path) -> bool:
     return name in DOTFILE_NAMES or name.startswith(DOTFILE_PREFIXES)
 
 
+def _is_dotenv_file(path: Path) -> bool:
+    name = path.name.lower()
+    return name in DOTFILE_NAMES or name.startswith(DOTFILE_PREFIXES) or path.suffix.lower() == ".env"
+
+
 def _finding(rule: tuple[re.Pattern[str], str, str, str, str, str, float, float], path: Path, line_number: int, line: str) -> Finding:
     pattern, title, severity, description, remediation, cwe, cvss, confidence = rule
     return Finding(title, severity, "OWASP", description, line.strip()[:500], remediation, str(path), line_number, cwe, cvss, confidence=confidence)
@@ -31,16 +36,38 @@ def _finding(rule: tuple[re.Pattern[str], str, str, str, str, str, float, float]
 # Trailing float on each rule is base confidence: how reliable this regex is
 # at matching a real issue vs. a placeholder/false positive. The verify stage
 # in loop.py adjusts this per-finding; this is just the starting point.
+#
+# The secret-detection rule below is QUOTED-VALUE ONLY, deliberately. An
+# earlier, more permissive unquoted-value version correctly caught real
+# .env-style `KEY=value` secrets, but applied to regular source code it also
+# matched things like `SECRET = os.getenv("...")` and `token=result["x"]` —
+# any right-hand expression of 6+ non-space characters before a quote, which
+# includes function calls and dict/array access, not just literal values.
+# Unquoted matching is still needed for real .env files (they're never
+# quoted), so it lives in DOTENV_SECRET_RULE below instead, applied only to
+# files that are genuinely .env-style — not to .py/.js/etc source code.
 RULES = [
-    (re.compile(r"(?i)(password|secret|api[_-]?key|token)\s*[:=]\s*(['\"][^'\"]{3,}['\"]|[^\s'\"#]{6,})"), "Hard-coded secret", "high", "A credential-like value is embedded in source or config.", "Move the value to a secret manager or environment variable and rotate it.", "CWE-798", 8.1, 0.5),
+    (re.compile(r"(?i)(password|secret|api[_-]?key|token)\s*[:=]\s*['\"][^'\"]{3,}['\"]"), "Hard-coded secret", "high", "A credential-like value is embedded in source or config.", "Move the value to a secret manager or environment variable and rotate it.", "CWE-798", 8.1, 0.5),
     (re.compile(r"(?i)\beval\s*\(|child_process\.(exec|execSync)\s*\(|os\.system\s*\("), "Dynamic command execution", "high", "Dynamic execution can become command injection when input is controllable.", "Remove dynamic execution or use an allowlisted argument array with strict validation.", "CWE-78", 9.0, 0.7),
     (re.compile(r"(?i)\b(debug\s*=\s*true|app\.run\([^)]*debug\s*=\s*True)"), "Debug mode enabled", "medium", "Debug configuration may expose stack traces or interactive tooling.", "Disable debug mode outside local development.", "CWE-489", 5.3, 0.9),
     (re.compile(r"(?i)\b(verify=False|rejectUnauthorized\s*:\s*false|ssl[_-]?verify\s*=\s*false)"), "TLS verification disabled", "high", "Disabled certificate verification permits man-in-the-middle attacks.", "Keep certificate verification enabled and install the correct trust chain.", "CWE-295", 7.4, 0.85),
     (re.compile(r"(?i)select\s+.+\s+from\s+.+\+\s*\w+|execute\s*\([^)]*\+"), "Potential SQL injection", "high", "SQL assembled from concatenated input can alter query semantics.", "Use parameterized queries and allowlist dynamic identifiers.", "CWE-89", 9.0, 0.4),
     (re.compile(r"(?i)jwt\.sign\s*\([^,]+,\s*['\"][^'\"]+['\"]"), "Hardcoded JWT signing secret", "high", "The JWT signing secret is a literal string in source instead of a managed secret.", "Load the signing secret from environment variables or a secret manager, and use a high-entropy value.", "CWE-321", 8.3, 0.75),
-    (re.compile(r"(?i)(cors\([^)]*origin\s*:\s*['\"]\*['\"]|access-control-allow-origin['\"]?\s*[:=]\s*['\"]\*['\"]|cors\([^)]*origin\s*:\s*true)"), "CORS wildcard / reflected origin", "medium", "Allowing any origin (or reflecting all origins) lets any website make authenticated cross-origin requests.", "Restrict CORS to an explicit allowlist of trusted origins.", "CWE-942", 6.5, 0.7),
+    (re.compile(r"(?i)(cors\([^)]*origin\s*:\s*['\"]\*['\"]|access-control-allow-origin['\"]?\s*[:=]\s*['\"]\*['\"]|cors\([^)]*origin\s*:\s*true|allow_origin_regex\s*=\s*r?['\"][^'\"]*\.[*+][^'\"]*['\"]|allow_origins\s*=\s*\[?\s*['\"]\*['\"])"), "CORS wildcard / reflected origin", "medium", "Allowing any origin (or matching all origins via an overly broad regex) lets any website make authenticated cross-origin requests.", "Restrict CORS to an explicit allowlist of trusted origins — avoid wildcard origins and broad origin regexes, especially alongside allow_credentials.", "CWE-942", 6.5, 0.7),
     (re.compile(r"dangerouslySetInnerHTML"), "Potential XSS via unescaped HTML rendering", "high", "Rendering unsanitized content directly into the DOM can execute attacker-controlled scripts.", "Sanitize the content (e.g. DOMPurify) before rendering, or avoid raw HTML injection entirely.", "CWE-79", 7.6, 0.55),
 ]
+
+# Applied only to genuine .env-style files (see _is_dotenv_file) — these are
+# flat KEY=value text, never executable code, so an unquoted-value match here
+# can't accidentally hit a function call or expression the way it could in a
+# .py/.js file.
+DOTENV_SECRET_RULE = (
+    re.compile(r"(?i)^[\w.-]*(?:password|secret|api[_-]?key|token)[\w.-]*\s*=\s*(.{3,})$"),
+    "Hard-coded secret", "high",
+    "A credential-like value is embedded in an environment file.",
+    "Move the value to a secret manager and ensure this file is not committed to version control.",
+    "CWE-798", 8.1, 0.5,
+)
 
 
 def scan_source(root: Path) -> list[Finding]:
@@ -64,10 +91,18 @@ def scan_source(root: Path) -> list[Finding]:
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
         except OSError:
             continue
-        for number, line in enumerate(lines, 1):
-            for rule in RULES:
-                if rule[0].search(line):
-                    findings.append(_finding(rule, path, number, line))
+        if _is_dotenv_file(path):
+            for number, line in enumerate(lines, 1):
+                if DOTENV_SECRET_RULE[0].search(line):
+                    findings.append(_finding(DOTENV_SECRET_RULE, path, number, line))
+                for rule in RULES[1:]:  # skip the general secret rule — DOTENV_SECRET_RULE covers it here
+                    if rule[0].search(line):
+                        findings.append(_finding(rule, path, number, line))
+        else:
+            for number, line in enumerate(lines, 1):
+                for rule in RULES:
+                    if rule[0].search(line):
+                        findings.append(_finding(rule, path, number, line))
     return findings
 
 
