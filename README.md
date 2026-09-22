@@ -5,8 +5,7 @@
  ██║  ██║██╔══╝   ██╔██╗    ██║   ██╔══╝  ██╔══██╗
  ██████╔╝███████╗██╔╝ ██╗   ██║   ███████╗██║  ██║
  ╚═════╝ ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
-
-        local-first, agentic application security assessment CLI
+Loop Engineering based Agentic Vulnerability and Penetration testing
 ```
 
 <div align="center">
