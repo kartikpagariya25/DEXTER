@@ -39,6 +39,35 @@ def test_parse_verdict_returns_none_on_garbage():
     assert av._parse_verdict("not json at all") is None
 
 
+def test_parse_verdict_extracts_json_wrapped_in_prose():
+    # Regression: Groq's llama-3.3-70b routinely wraps its JSON answer in a
+    # sentence even when told "respond with ONLY a JSON object" - the old
+    # parser required the whole response to be clean JSON and silently
+    # fell back to the offline heuristic on every single real call.
+    text = 'Based on my analysis:\n\n{"verdict": "verified", "confidence": 0.85, "reasoning": "real key"}\n\nLet me know if you need more.'
+    result = av._parse_verdict(text)
+    assert result == {"verdict": "verified", "confidence": 0.85, "reasoning": "real key"}
+
+
+def test_on_step_reports_real_reason_when_llm_unreachable(tmp_path: Path, monkeypatch):
+    # Regression: a failed call used to return bare None with zero
+    # indication of why, forcing guesswork every time something broke.
+    monkeypatch.setenv("DEXTER_HOME", str(tmp_path))
+    monkeypatch.delenv("DEXTER_LLM_KEYS", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "http://127.0.0.1:1")
+
+    steps: list[str] = []
+    result = av.agentic_verify(
+        {"title": "t", "file": "f", "line": 1, "evidence": "e", "description": "d"},
+        str(tmp_path),
+        on_step=steps.append,
+    )
+
+    assert result is None
+    assert any("LLM unavailable" in s and "no cloud api key" in s.lower() for s in steps)
+
+
 class _MultiTurnHandler(BaseHTTPRequestHandler):
     calls = 0
 

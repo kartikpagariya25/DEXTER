@@ -109,11 +109,12 @@ def serve(run: dict, host: str, port: int, no_open: bool) -> None:
 
 
 def _print_stage(name: str) -> None:
+    ts = f"{Theme.dim}[{datetime.now().strftime('%H:%M:%S')}]{Theme.reset}"
     if ":" in name:
         _, tool = name.split(":", 1)
-        print(f"   {Theme.dim}running {tool}...{Theme.reset}")
+        print(f"{ts}    {Theme.dim}{tool}{Theme.reset}")
     else:
-        print(f"{Theme.red}->{Theme.reset} {Theme.white}{name}{Theme.reset}")
+        print(f"{ts} {Theme.red}▸{Theme.reset} {Theme.white}{Theme.bold}{name.upper()}{Theme.reset}")
 
 
 def main(argv: list[str] | None = None) -> int:

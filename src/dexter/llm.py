@@ -20,7 +20,8 @@ def enrich(findings: list[dict[str, Any]], instructions: str = "") -> str:
     ]
     result = call_llm(messages)
     if result.provider == "none":
-        return "Local rules completed. No LLM reachable — set DEXTER_LLM_KEYS (or GROQ_API_KEY), or run Ollama locally."
+        detail = f" ({result.error})" if result.error else ""
+        return f"Local rules completed. No LLM reachable{detail} — set DEXTER_LLM_KEYS (or GROQ_API_KEY), or run Ollama locally."
     if not result.text:
         return "LLM returned an empty summary."
     return result.text + (" (via local fallback)" if result.provider == "local" else "")

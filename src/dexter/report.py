@@ -15,7 +15,7 @@ HUMAN_SYSTEM_PROMPT = (
 )
 
 
-def _fallback_human_report(run: dict[str, Any]) -> str:
+def _fallback_human_report(run: dict[str, Any], reason: str | None = None) -> str:
     findings = run.get("findings", [])
     if not findings:
         return "Good news — the scan didn't find any issues in this codebase."
@@ -29,7 +29,10 @@ def _fallback_human_report(run: dict[str, Any]) -> str:
     for finding in ranked[:10]:
         lines.append(f"- {finding['title']}: {finding.get('description', '')}")
     lines.append("")
-    lines.append("(No LLM configured, so this is a simplified auto-generated summary rather than a full narrative. Set DEXTER_LLM_KEYS for a richer explanation.)")
+    if reason:
+        lines.append(f"(This is a simplified auto-generated summary, not a full narrative — the LLM call didn't succeed: {reason})")
+    else:
+        lines.append("(No LLM configured, so this is a simplified auto-generated summary rather than a full narrative. Set DEXTER_LLM_KEYS for a richer explanation.)")
     return "\n".join(lines)
 
 
@@ -54,6 +57,6 @@ def generate_human_report(run: dict[str, Any]) -> str:
     ]
     result = call_llm(messages)
     if result.provider == "none" or not result.text:
-        return _fallback_human_report(run)
+        return _fallback_human_report(run, reason=result.error)
     suffix = "\n\n(generated via local fallback model)" if result.provider == "local" else ""
     return result.text + suffix

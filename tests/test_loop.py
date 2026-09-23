@@ -129,6 +129,39 @@ def test_agentic_refine_returns_none_when_no_llm(tmp_path: Path, monkeypatch):
     assert _agentic_refine([f], "") is None
 
 
+def test_agentic_refine_reports_reason_via_on_step(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("DEXTER_LLM_KEYS", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "http://127.0.0.1:1")
+    from dexter.loop import _agentic_refine
+    from dexter.models import Finding
+
+    f = Finding("x", "high", "y", "d", "e", "r", "/a.py", 1, None, None, source="local-rule", confidence=0.5)
+    steps: list[str] = []
+
+    _agentic_refine([f], "", on_step=steps.append)
+
+    assert any("no cloud api key" in s.lower() for s in steps)
+
+
+def test_agentic_refine_parses_json_wrapped_in_prose(monkeypatch):
+    # Regression: same brittle "whole response must be clean JSON" parser
+    # that was fixed in agentic_verify existed here too, unfixed, and
+    # would silently discard every real Refine response that Groq wraps
+    # in a sentence (the common case).
+    from dexter.loop import _agentic_refine
+    from dexter.models import Finding
+    from dexter import provider_pool as pp
+
+    wrapped = 'Here is my analysis:\n\n{"adjustments": [], "summary": "no changes needed"}\n\nHope that helps.'
+    monkeypatch.setattr("dexter.loop.call_llm", lambda messages, tools=None: pp.PoolResult(wrapped, "pool"))
+
+    f = Finding("x", "high", "y", "d", "e", "r", "/a.py", 1, None, None, source="local-rule", confidence=0.5)
+    result = _agentic_refine([f], "")
+
+    assert result == {"adjustments": [], "summary": "no changes needed"}
+
+
 def test_refine_falls_back_to_keyword_matching_offline(tmp_path: Path, monkeypatch):
     # Regression: with no LLM reachable, refine behavior must match exactly
     # what it did before agentic refine existed.
@@ -153,3 +186,32 @@ def test_stage_callback_fires_in_order(tmp_path: Path, monkeypatch):
     base_stages = [s for s in seen if ":" not in s]
 
     assert base_stages == ["scan", "analyze", "verify", "refine", "report"]
+
+
+def test_github_fetch_temp_dir_is_cleaned_up_after_scan(tmp_path: Path, monkeypatch):
+    fake_repo_dir = tmp_path / "fetched" / "repo-main"
+    fake_repo_dir.mkdir(parents=True)
+    (fake_repo_dir / "app.py").write_text("x = 1\n", encoding="utf-8")
+
+    monkeypatch.setattr("dexter.loop.is_github_repo_url", lambda t: t == "https://github.com/owner/repo")
+    monkeypatch.setattr("dexter.loop.fetch_github_repo", lambda t, on_step=None: str(fake_repo_dir))
+    monkeypatch.setattr("dexter.loop.run_adapters", lambda target, on_tool=None: [])
+    monkeypatch.delenv("DEXTER_KEEP_GITHUB_TEMP", raising=False)
+
+    run_savr(["https://github.com/owner/repo"], "", "standard", "cleanup-test")
+
+    assert not fake_repo_dir.exists()
+
+
+def test_github_fetch_temp_dir_kept_when_env_set(tmp_path: Path, monkeypatch):
+    fake_repo_dir = tmp_path / "fetched" / "repo-main"
+    fake_repo_dir.mkdir(parents=True)
+
+    monkeypatch.setattr("dexter.loop.is_github_repo_url", lambda t: t == "https://github.com/owner/repo")
+    monkeypatch.setattr("dexter.loop.fetch_github_repo", lambda t, on_step=None: str(fake_repo_dir))
+    monkeypatch.setattr("dexter.loop.run_adapters", lambda target, on_tool=None: [])
+    monkeypatch.setenv("DEXTER_KEEP_GITHUB_TEMP", "1")
+
+    run_savr(["https://github.com/owner/repo"], "", "standard", "cleanup-test2")
+
+    assert fake_repo_dir.exists()

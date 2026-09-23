@@ -177,6 +177,8 @@ def agentic_verify(finding_dict: dict[str, Any], root: str, on_step: Callable[[s
     for _ in range(MAX_TOOL_ITERATIONS):
         result = call_llm(messages, tools=VERIFY_TOOLS)
         if result.provider == "none":
+            if on_step:
+                on_step(f"LLM unavailable — {result.error or 'unknown reason'}")
             return None
         message = result.message or {"content": result.text, "tool_calls": None}
         tool_calls = message.get("tool_calls")
@@ -186,6 +188,8 @@ def agentic_verify(finding_dict: dict[str, Any], root: str, on_step: Callable[[s
             verdict = _parse_verdict(last_text)
             if verdict is not None:
                 verify_cache.put(finding_dict, verdict)
+            elif on_step:
+                on_step(f"LLM responded but verdict didn't parse — raw: {last_text[:150]!r}")
             return verdict
 
         messages.append(message)

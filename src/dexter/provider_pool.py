@@ -14,7 +14,8 @@ from .storage import data_dir
 
 DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
-DEFAULT_COOLDOWN_SECONDS = 5 * 3600
+DEFAULT_COOLDOWN_SECONDS = 60
+MAX_COOLDOWN_SECONDS = 5 * 3600
 DEFAULT_LOCAL_URL = "http://localhost:11434/v1"
 DEFAULT_LOCAL_MODEL = "llama3.1"
 
@@ -24,6 +25,7 @@ class PoolResult:
     text: str
     provider: str  # "pool", "local", or "none"
     message: dict | None = None  # full assistant message, only populated when tools were used
+    error: str | None = None  # human-readable reason, populated only when provider == "none"
 
 
 def _state_path() -> Path:
@@ -67,12 +69,32 @@ def _resolve_model() -> str:
     return os.environ.get("DEXTER_LLM_MODEL") or os.environ.get("DEXTER_GROQ_MODEL", DEFAULT_MODEL)
 
 
+def _parse_retry_after(exc: urllib.error.HTTPError) -> float | None:
+    value = exc.headers.get("Retry-After") if exc.headers else None
+    if not value:
+        return None
+    try:
+        return max(1.0, float(value))
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        target = parsedate_to_datetime(value)
+        return max(1.0, (target.timestamp() - time.time()))
+    except Exception:
+        return None
+
+
 def _chat_completion(base_url: str, api_key: str | None, model: str, messages: list[dict], tools: list[dict] | None = None) -> dict:
     body: dict = {"model": model, "temperature": 0.1, "messages": messages}
     if tools:
         body["tools"] = tools
         body["tool_choice"] = "auto"
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "dexter-cli/1.3 (+https://github.com/kartikpagariya25/DEXTER)",
+        "Accept": "application/json",
+    }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     request = urllib.request.Request(f"{base_url}/chat/completions", data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
@@ -90,33 +112,72 @@ def call_llm(messages: list[dict], tools: list[dict] | None = None) -> PoolResul
     state = _load_state()
     now = time.time()
 
+    notes: list[str] = []
+    if not keys:
+        notes.append("no cloud API key configured (set DEXTER_LLM_KEYS)")
+
+    all_cooling = True
     for key in keys:
         kid = _key_id(key)
-        if state.get(kid, 0) > now:
+        until = state.get(kid, 0)
+        if until > now:
+            notes.append(f"key {kid} cooling down ({int(until - now)}s left)")
             continue
+        all_cooling = False
         try:
             message = _chat_completion(base_url, key, model, messages, tools)
             return PoolResult(message.get("content") or "", "pool", message)
         except urllib.error.HTTPError as exc:
+            body = ""
+            try:
+                body = exc.read().decode("utf-8", errors="replace")[:200]
+            except Exception:
+                pass
             if exc.code == 429:
-                state[kid] = now + cooldown
+                retry_after = _parse_retry_after(exc)
+                wait = retry_after if retry_after is not None else cooldown
+                wait = min(wait, MAX_COOLDOWN_SECONDS)
+                state[kid] = now + wait
                 _save_state(state)
+                notes.append(f"key {kid} rate-limited (429), cooling {int(wait)}s")
+            else:
+                notes.append(f"key {kid} HTTP {exc.code}: {body or exc.reason}")
             continue
-        except Exception:
+        except urllib.error.URLError as exc:
+            notes.append(f"key {kid} network error: {exc.reason}")
+            continue
+        except TimeoutError:
+            notes.append(f"key {kid} timed out after 30s")
+            continue
+        except json.JSONDecodeError:
+            notes.append(f"key {kid} returned a non-JSON response")
+            continue
+        except Exception as exc:
+            notes.append(f"key {kid} failed: {type(exc).__name__}: {exc}")
             continue
 
     local_url = os.environ.get("DEXTER_LLM_LOCAL_URL", DEFAULT_LOCAL_URL)
     local_model = os.environ.get("DEXTER_LLM_LOCAL_MODEL", DEFAULT_LOCAL_MODEL)
+    local_key = os.environ.get("DEXTER_LLM_LOCAL_API_KEY")
     try:
-        message = _chat_completion(local_url, None, local_model, messages, tools)
+        message = _chat_completion(local_url, local_key, local_model, messages, tools)
         return PoolResult(message.get("content") or "", "local", message)
-    except Exception:
-        return PoolResult("", "none")
+    except Exception as exc:
+        notes.append(f"local fallback ({local_url}) failed: {type(exc).__name__}: {exc}")
+
+    if not keys:
+        prefix = "no cloud keys configured"
+    elif all_cooling:
+        prefix = "all configured keys cooling down"
+    else:
+        prefix = "all providers failed"
+    return PoolResult("", "none", error=f"{prefix} — " + "; ".join(notes))
 
 
 def _reachable(base_url: str) -> bool:
     try:
-        urllib.request.urlopen(f"{base_url}/models", timeout=1.5)
+        req = urllib.request.Request(f"{base_url}/models", headers={"User-Agent": "dexter-cli/1.3"})
+        urllib.request.urlopen(req, timeout=1.5)
         return True
     except urllib.error.HTTPError:
         return True
@@ -137,7 +198,13 @@ def pool_status() -> str:
         until = state.get(kid, 0)
         if until > now:
             remaining = int(until - now)
-            lines.append(f"  key {kid}: cooling down ({remaining // 3600}h{(remaining % 3600) // 60}m left)")
+            if remaining < 60:
+                human = f"{remaining}s"
+            elif remaining < 3600:
+                human = f"{remaining // 60}m{remaining % 60}s"
+            else:
+                human = f"{remaining // 3600}h{(remaining % 3600) // 60}m"
+            lines.append(f"  key {kid}: cooling down ({human} left)")
         else:
             lines.append(f"  key {kid}: ready")
     local_url = os.environ.get("DEXTER_LLM_LOCAL_URL", DEFAULT_LOCAL_URL)

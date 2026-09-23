@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 from pathlib import Path
 from typing import Callable
 
@@ -110,7 +112,7 @@ REFINE_SYSTEM_PROMPT = (
 )
 
 
-def _agentic_refine(findings: list[Finding], instructions: str) -> dict | None:
+def _agentic_refine(findings: list[Finding], instructions: str, on_step: Callable[[str], None] | None = None) -> dict | None:
     if not findings:
         return None
     payload = [
@@ -132,15 +134,23 @@ def _agentic_refine(findings: list[Finding], instructions: str) -> dict | None:
     ]
     result = call_llm(messages)
     if result.provider == "none" or not result.text:
+        if on_step:
+            on_step(f"skipped — {result.error or 'empty response'}")
         return None
     cleaned = result.text.strip()
     if cleaned.startswith("```"):
         cleaned = cleaned.strip("`")
         if cleaned.lower().startswith("json"):
             cleaned = cleaned[4:]
+    cleaned = cleaned.strip()
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        cleaned = cleaned[start:end + 1]
     try:
-        return json.loads(cleaned.strip())
+        return json.loads(cleaned)
     except json.JSONDecodeError:
+        if on_step:
+            on_step(f"response didn't parse — raw: {result.text[:150]!r}")
         return None
 
 
@@ -214,7 +224,7 @@ def _verify(finding: Finding, on_step: StageCallback | None = None) -> None:
             finding.description = f"{finding.description}\n\nAI verification: {result['reasoning']}"
     else:
         if on_step:
-            on_step("no usable AI verdict (unreachable or unparseable) — using offline heuristic")
+            on_step("falling back to offline heuristic")
         _fallback_verify_heuristic(finding)
     finding.validated = finding.verification == "verified"
 
@@ -244,10 +254,12 @@ def run_savr(
 
     stage("scan")
     findings: list[Finding] = []
+    github_temp_dirs: list[str] = []
     for target in targets:
         if is_github_repo_url(target):
             try:
                 target = fetch_github_repo(target, on_step=lambda s: stage(f"scan:{s}"))
+                github_temp_dirs.append(target)
             except (ValueError, RuntimeError) as exc:
                 stage(f"scan:github fetch failed — {exc}")
                 continue
@@ -279,10 +291,11 @@ def run_savr(
 
     stage("verify")
     for finding in run.findings:
+        stage(f"verify:checking '{finding.title[:40]}' ({finding.file or finding.category})")
         _verify(finding, on_step=lambda step, f=finding: stage(f"verify:{f.title[:24]} → {step}"))
 
     stage("refine")
-    refine_result = _agentic_refine(run.findings, instructions)
+    refine_result = _agentic_refine(run.findings, instructions, on_step=lambda step: stage(f"refine:{step}"))
     if refine_result:
         _apply_refine_result(run.findings, refine_result)
         if refine_result.get("summary"):
@@ -307,6 +320,13 @@ def run_savr(
     stage("report")
     run.summary = enrich([finding.to_dict() for finding in run.findings], instructions)
     run.status = "completed"
+
+    if github_temp_dirs and os.environ.get("DEXTER_KEEP_GITHUB_TEMP") != "1":
+        for temp_dir in github_temp_dirs:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            parent = str(Path(temp_dir).parent)
+            shutil.rmtree(parent, ignore_errors=True)
+
     return run
 
 
