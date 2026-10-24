@@ -47,7 +47,7 @@ def generate_human_report(run: dict[str, Any]) -> str:
             "verification": f.get("verification", "unverified"),
             "description": f.get("description", ""),
             "remediation": f.get("remediation", ""),
-            "location": f"{f.get('file')}:{f.get('line')}" if f.get("file") else "n/a",
+            "location": (f"{f.get('file')}:{f.get('line')}" if f.get("line") else f.get("file")) if f.get("file") else "n/a",
         }
         for f in findings
     ]

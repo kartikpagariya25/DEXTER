@@ -246,7 +246,7 @@ def _print_findings_table(findings: list) -> None:
         v_tag = f"{v_color}{v_icon} {finding.verification}{Theme.reset}"
         conf_tag = f"{Theme.muted}conf {finding.confidence:.2f}{Theme.reset}"
         print(f"[{sev_tag}] {Theme.white}{finding.title}{Theme.reset}  {v_tag}  {conf_tag}")
-        location = f"{finding.file}:{finding.line}" if finding.file else finding.category
+        location = (f"{finding.file}:{finding.line}" if finding.line else finding.file) if finding.file else finding.category
         print(f"   {Theme.dim}{location} — {finding.evidence[:100]}{Theme.reset}")
 
 

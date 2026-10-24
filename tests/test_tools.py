@@ -480,3 +480,32 @@ def test_jwt_tool_parses_vulnerable_output(monkeypatch):
     assert len(findings) == 1
     assert findings[0].severity == "high"
     assert findings[0].cwe == "CWE-347"
+
+
+def test_bandit_code_helper_strips_line_numbers():
+    from dexter.tools import _bandit_code
+
+    assert _bandit_code(["18 import os", "19 x = eval(y)", ""]) == "x = eval(y)"
+    assert _bandit_code([]) == ""
+
+
+def test_trivy_groups_cves_per_package(tmp_path, monkeypatch):
+    import json as _json
+    from dexter import tools
+
+    report = tmp_path / "trivy.json"
+    vulns = [
+        {"PkgName": "lodash", "InstalledVersion": "4.17.0", "VulnerabilityID": f"CVE-2020-{i}", "Severity": sev, "FixedVersion": "4.17.21", "Title": "t"}
+        for i, sev in enumerate(["LOW", "HIGH", "MEDIUM"])
+    ]
+    report.write_text(_json.dumps({"Results": [{"Target": "package-lock.json", "Vulnerabilities": vulns}]}))
+    monkeypatch.setattr(tools, "_which", lambda name: "trivy")
+    monkeypatch.setattr(tools, "_report_path", lambda name: (str(report), report))
+    monkeypatch.setattr(tools, "_run", lambda *a, **k: (0, "", ""))
+
+    findings = tools.run_trivy(str(tmp_path))
+
+    assert len(findings) == 1
+    assert findings[0].severity == "high"
+    assert "3 known" in findings[0].title
+    assert findings[0].line is None

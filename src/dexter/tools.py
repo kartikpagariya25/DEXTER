@@ -132,6 +132,14 @@ def run_semgrep(target: str) -> list[Finding]:
     return findings
 
 
+def _bandit_code(code_lines: list[str]) -> str:
+    for raw in reversed(code_lines):
+        text = re.sub(r"^\s*\d+\s*", "", raw).strip()
+        if text:
+            return text[:300]
+    return ""
+
+
 def run_bandit(target: str) -> list[Finding]:
     if not _which("bandit"):
         return []
@@ -148,7 +156,7 @@ def run_bandit(target: str) -> list[Finding]:
             severity=_severity(r.get("issue_severity")),
             category="Bandit",
             description=r.get("issue_text", ""),
-            evidence=code_lines[-1][:300] if code_lines else "",
+            evidence=_snippet(r.get("filename"), r.get("line_number")) or _bandit_code(code_lines),
             remediation=r.get("more_info", "See Bandit documentation for remediation guidance."),
             file=r.get("filename"),
             line=r.get("line_number"),
@@ -203,25 +211,33 @@ def run_trivy(target: str) -> list[Finding]:
             data = json.loads(read_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             data = {}
+        rank = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+        groups: dict[tuple, list[dict]] = {}
         for result in data.get("Results", []):
             for vuln in result.get("Vulnerabilities") or []:
-                pkg = vuln.get("PkgName", "dependency")
-                version = vuln.get("InstalledVersion", "?")
-                fixed = vuln.get("FixedVersion", "a patched version")
-                findings.append(Finding(
-                    title=f"{pkg} {version} has a known vulnerability ({vuln.get('VulnerabilityID')})",
-                    severity=_severity(vuln.get("Severity")),
-                    category="Trivy (dependency)",
-                    description=(vuln.get("Title") or vuln.get("Description", ""))[:400],
-                    evidence=f"{pkg}@{version} (fixed in {fixed})",
-                    remediation=f"Upgrade {pkg} to {fixed}.",
-                    file=result.get("Target"),
-                    line=None,
-                    cwe=None,
-                    cvss=None,
-                    source="trivy",
-                    confidence=0.9,
-                ))
+                key = (result.get("Target"), vuln.get("PkgName", "dependency"), vuln.get("InstalledVersion", "?"))
+                groups.setdefault(key, []).append(vuln)
+        for (target_file, pkg, version), vulns in groups.items():
+            vulns.sort(key=lambda v: -rank.get(_severity(v.get("Severity")), 0))
+            top = vulns[0]
+            fixes = sorted({v["FixedVersion"] for v in vulns if v.get("FixedVersion")})
+            fixed = fixes[-1] if fixes else "a patched version"
+            ids = [v.get("VulnerabilityID", "") for v in vulns]
+            shown = ", ".join(ids[:5]) + (f" +{len(ids) - 5} more" if len(ids) > 5 else "")
+            findings.append(Finding(
+                title=f"{pkg} {version} has {len(vulns)} known vulnerabilit{'y' if len(vulns) == 1 else 'ies'}",
+                severity=_severity(top.get("Severity")),
+                category="Trivy (dependency)",
+                description=((top.get("Title") or top.get("Description", ""))[:300] + f" IDs: {shown}").strip(),
+                evidence=f"{pkg}@{version} (fixed in {fixed})",
+                remediation=f"Upgrade {pkg} to {fixed}.",
+                file=target_file,
+                line=None,
+                cwe=None,
+                cvss=None,
+                source="trivy",
+                confidence=0.9,
+            ))
         read_path.unlink(missing_ok=True)
     return findings
 
