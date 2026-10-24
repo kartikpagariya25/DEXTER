@@ -103,3 +103,11 @@ def test_merges_eval_findings_with_different_wording():
     f3 = _finding(title="Found data from a web request flowing to `eval`", description="user input reaches eval", source="semgrep")
 
     assert len(correlate([f1, f2, f3])) == 1
+
+
+def test_merges_certificate_verification_findings_across_tools():
+    f1 = _finding(title="TLS verification disabled", description="TLS verification is turned off.", source="local-rule")
+    f2 = _finding(title="Call to requests with verify=False disabling SSL certificate checks", description="ssl checks off", source="bandit")
+    f3 = _finding(title="Certificate verification has been explicitly disabled", description="certificate check disabled", source="semgrep")
+
+    assert len(correlate([f1, f2, f3])) == 1

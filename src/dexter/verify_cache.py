@@ -12,11 +12,14 @@ def _cache_path() -> Path:
     return data_dir() / "verify_cache.json"
 
 
+CACHE_VERSION = "2"
+
+
 def fingerprint(finding_dict: dict[str, Any]) -> str:
     # Same title + file + evidence means the same underlying finding — if
     # nothing about it changed since a prior scan, there's no reason to
     # pay for another round of LLM reasoning to reach the same conclusion.
-    key = f"{finding_dict.get('title')}|{finding_dict.get('file')}|{finding_dict.get('evidence')}"
+    key = f"{CACHE_VERSION}|{finding_dict.get('title')}|{finding_dict.get('file')}|{finding_dict.get('evidence')}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 

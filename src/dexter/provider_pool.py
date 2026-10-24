@@ -212,8 +212,12 @@ def pool_status() -> str:
     return "\n".join(lines)
 
 
-DEFAULT_MAX_WAIT_SECONDS = 30
-MAX_WAIT_ATTEMPTS = 3
+DEFAULT_MAX_WAIT_SECONDS = 60
+MAX_WAIT_ATTEMPTS = 6
+
+
+def _wait(seconds: float) -> None:
+    time.sleep(seconds)
 
 
 def _soonest_wake() -> float | None:
@@ -234,6 +238,6 @@ def call_llm(messages: list[dict], tools: list[dict] | None = None) -> PoolResul
         if wake is None or wake > max_wait:
             break
         with Spinner("rate limit reached, waiting"):
-            time.sleep(max(wake, 0) + 0.5)
+            _wait(max(wake, 0) + 0.5)
         result = _call_once(messages, tools)
     return result

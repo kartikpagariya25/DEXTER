@@ -37,7 +37,7 @@ SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 # Loose topic vocabulary used to decide whether two findings on the same
 # line are actually the same underlying issue (merge them) or coincidentally
 # co-located but unrelated (e.g. a debug flag next to a secret — keep both).
-TOPIC_KEYWORDS = ("secret", "password", "credential", "token", "jwt", "sql", "injection", "xss", "cors", "origin", "debug", "tls", "ssl", "vulnerable", "outdated", "cve", "eval", "exec", "command")
+TOPIC_KEYWORDS = ("secret", "password", "credential", "token", "jwt", "sql", "injection", "xss", "cors", "origin", "debug", "tls", "ssl", "vulnerable", "outdated", "cve", "eval", "exec", "command", "certificate", "verif", "path")
 
 
 def _location_key(path: str) -> str:

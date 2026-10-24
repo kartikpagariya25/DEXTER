@@ -208,7 +208,7 @@ def test_waits_out_short_rate_limit_then_succeeds(fake_server, tmp_path: Path, m
     monkeypatch.setenv("DEXTER_LLM_MAX_WAIT", "5")
     monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "http://127.0.0.1:1")
     pp._save_state({pp._key_id("good-key"): pp.time.time() + 1})
-    monkeypatch.setattr(pp.time, "sleep", lambda s: pp._save_state({}))
+    monkeypatch.setattr(pp, "_wait", lambda s: pp._save_state({}))
 
     result = pp.call_llm([{"role": "user", "content": "hi"}])
 
