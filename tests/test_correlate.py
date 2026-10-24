@@ -111,3 +111,10 @@ def test_merges_certificate_verification_findings_across_tools():
     f3 = _finding(title="Certificate verification has been explicitly disabled", description="certificate check disabled", source="semgrep")
 
     assert len(correlate([f1, f2, f3])) == 1
+
+
+def test_merges_password_and_secret_wording():
+    f1 = _finding(title="Hard-coded secret", description="A credential-like value is embedded in source.", source="local-rule")
+    f2 = _finding(title="Possible hardcoded password: 'abc'", description="Possible hardcoded password", source="bandit")
+
+    assert len(correlate([f1, f2])) == 1

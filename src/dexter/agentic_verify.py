@@ -207,7 +207,12 @@ def agentic_verify(finding_dict: dict[str, Any], root: str, on_step: Callable[[s
             output = _execute_tool(root, fn.get("name", ""), args)
             messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": output[:2000]})
 
-    verdict = _parse_verdict(last_text)  # circuit breaker hit — use whatever the model last said, if parseable
+    verdict = _parse_verdict(last_text)
+    if verdict is None:
+        messages.append({"role": "user", "content": "Investigation budget used up. Reply now with only the final JSON verdict."})
+        final = call_llm(messages)
+        if final.provider != "none":
+            verdict = _parse_verdict(final.text)
     if verdict is not None:
         verify_cache.put(finding_dict, verdict)
     return verdict

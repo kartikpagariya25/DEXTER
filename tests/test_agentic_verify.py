@@ -155,3 +155,38 @@ def test_returns_none_when_no_llm_reachable(tmp_path: Path, monkeypatch):
     result = av.agentic_verify({"title": "t", "file": "f", "line": 1, "evidence": "e", "description": "d"}, str(tmp_path))
 
     assert result is None
+
+
+class _ToolsThenVerdictHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        payload = json.loads(self.rfile.read(length))
+        if payload.get("tools"):
+            msg = {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "x", "function": {"name": "shannon_entropy", "arguments": json.dumps({"value": "x"})}}
+            ]}
+        else:
+            msg = {"role": "assistant", "content": '{"verdict": "verified", "confidence": 0.7, "reasoning": "final"}'}
+        body = json.dumps({"choices": [{"message": msg}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        return
+
+
+def test_asks_for_final_verdict_when_tool_budget_is_spent(tmp_path: Path, monkeypatch):
+    server = HTTPServer(("127.0.0.1", 0), _ToolsThenVerdictHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setenv("DEXTER_HOME", str(tmp_path))
+        monkeypatch.setenv("DEXTER_LLM_BASE_URL", f"http://127.0.0.1:{server.server_port}")
+        monkeypatch.setenv("DEXTER_LLM_KEYS", "fake-key")
+
+        result = av.agentic_verify({"title": "t", "file": "f", "line": 1, "evidence": "e", "description": "d"}, str(tmp_path))
+
+        assert result is not None and result["verdict"] == "verified"
+    finally:
+        server.shutdown()

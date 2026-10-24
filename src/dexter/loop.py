@@ -45,9 +45,15 @@ def _location_key(path: str) -> str:
     return norm.lower() if re.match(r"^[A-Za-z]:", norm) else norm
 
 
+SECRET_FAMILY = {"secret", "password", "credential", "token"}
+
+
 def _topics(finding: Finding) -> set[str]:
     text = f"{finding.title} {finding.category} {finding.description}".lower()
-    return {kw for kw in TOPIC_KEYWORDS if kw in text}
+    found = {kw for kw in TOPIC_KEYWORDS if kw in text}
+    if found & SECRET_FAMILY:
+        found = (found - SECRET_FAMILY) | {"secret"}
+    return found
 
 
 def _cluster_by_topic(group: list[Finding]) -> list[list[Finding]]:
