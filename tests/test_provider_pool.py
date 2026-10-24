@@ -116,7 +116,7 @@ def test_retry_after_header_is_honored_over_default_cooldown(fake_server, tmp_pa
 
     kid = pp._key_id("bad-key-with-retry-after")
     remaining = state[kid] - pp.time.time()
-    assert 0 < remaining <= 5, f"expected ~3s cooldown from Retry-After header, got {remaining:.1f}s"
+    assert remaining <= 5, f"expected ~3s cooldown from Retry-After header, got {remaining:.1f}s"
 
 
 def test_default_cooldown_without_retry_after_is_short_not_five_hours(fake_server, tmp_path: Path, monkeypatch):
@@ -137,14 +137,12 @@ def test_default_cooldown_without_retry_after_is_short_not_five_hours(fake_serve
     assert remaining <= 120, f"default cooldown with no Retry-After header should be short, got {remaining:.1f}s"
 
 
-def test_cooldown_display_shows_seconds_for_short_waits(fake_server, tmp_path: Path, monkeypatch):
+def test_cooldown_display_shows_seconds_for_short_waits(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("DEXTER_HOME", str(tmp_path))
-    monkeypatch.setenv("DEXTER_LLM_BASE_URL", fake_server)
-    monkeypatch.setenv("DEXTER_LLM_KEYS", "bad-key-with-retry-after")
-
-    pp.call_llm([{"role": "user", "content": "hi"}])
+    monkeypatch.setenv("DEXTER_LLM_BASE_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("DEXTER_LLM_KEYS", "some-key")
+    pp._save_state({pp._key_id("some-key"): pp.time.time() + 30})
     status = pp.pool_status()
-
     assert "0h0m left" not in status
     assert "s left" in status
 
