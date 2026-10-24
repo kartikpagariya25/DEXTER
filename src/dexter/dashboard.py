@@ -210,6 +210,13 @@ def _finding_card(finding: dict, width: int) -> None:
             print(f"{Theme.white}{line}{Theme.reset}")
 
 
+def _pause(message: str = "press enter to continue...") -> None:
+    try:
+        input(f"\n{Theme.muted}{message}{Theme.reset}")
+    except (EOFError, KeyboardInterrupt):
+        print()
+
+
 def _input_box(width: int) -> str:
     top = f"{Theme.dark_red}╭{'─' * width}╮{Theme.reset}"
     bot = f"{Theme.dark_red}╰{'─' * width}╯{Theme.reset}"
@@ -292,19 +299,23 @@ def _render(findings: list[dict], runs: list[dict], target: str = "no target sel
 def _run_exploit(name: str, target: str, param: str) -> tuple[list[dict], str] | None:
     if not is_authorized(target):
         print(f"{Theme.red}{target} is not authorized.{Theme.reset} run: {Theme.white}authorize {target}{Theme.reset}")
-        input(f"\n{Theme.muted}press enter to continue...{Theme.reset}")
+        _pause("press enter to continue...")
         return None
     print(f"\n{Theme.red}{Theme.bold}⚠ EXPLOITATION{Theme.reset} — {name} will actively attempt to exploit parameter '{param}' on {target}")
-    confirm = input(f"{Theme.white}Type 'yes' to proceed: {Theme.reset}").strip().lower()
+    try:
+        confirm = input(f"{Theme.white}Type 'yes' to proceed: {Theme.reset}").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        confirm = ""
     if confirm != "yes":
         print(f"{Theme.muted}cancelled{Theme.reset}")
-        input(f"\n{Theme.muted}press enter to continue...{Theme.reset}")
+        _pause("press enter to continue...")
         return None
     try:
         results = run_single_exploit(name, target, param)
     except (ValueError, RuntimeError) as exc:
         print(f"{Theme.red}{exc}{Theme.reset}")
-        input(f"\n{Theme.muted}press enter to continue...{Theme.reset}")
+        _pause("press enter to continue...")
         return None
     run = Run.create(safe_run_id(f"run-{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"), [target], "exploit")
     run.findings = results
@@ -318,13 +329,13 @@ def _run_single_tool(name: str, target: str) -> tuple[list[dict], str] | None:
     print(f"\n{Theme.red}{Theme.bold}▸{Theme.reset} running {Theme.white}{name}{Theme.reset} on {Theme.grey}{target}{Theme.reset}...")
     if name in {"nuclei", "nikto", "nmap", "zap", "ffuf"} and not is_authorized(target):
         print(f"{Theme.red}{target} is not authorized.{Theme.reset} run: {Theme.white}authorize {target}{Theme.reset}")
-        input(f"\n{Theme.muted}press enter to continue...{Theme.reset}")
+        _pause("press enter to continue...")
         return None
     try:
         results = run_single_adapter(name, target)
     except (ValueError, RuntimeError) as exc:
         print(f"{Theme.red}{exc}{Theme.reset}")
-        input(f"\n{Theme.muted}press enter to continue...{Theme.reset}")
+        _pause("press enter to continue...")
         return None
     for finding in results:
         _verify(finding)
@@ -391,10 +402,15 @@ def launch() -> int:
             parts = shlex.split(command)
         except ValueError as exc:
             print(f"{Theme.red}parse error:{Theme.reset} {exc}")
-            input(f"\n{Theme.muted}press enter to continue...{Theme.reset}")
+            _pause("press enter to continue...")
             _render(findings, list_runs(), target)
             continue
+        if parts and parts[0].lower() == "dexter" and len(parts) > 1:
+            parts = parts[1:]
         action = parts[0].lower()
+        if action in {"cls"}:
+            _render(findings, list_runs(), target, first=True)
+            continue
         if action in {"exit", "quit", "q"}:
             print(f"{Theme.muted}dexter session closed.{Theme.reset}")
             return 0
@@ -416,7 +432,7 @@ def launch() -> int:
                 ("exit", "leave Dexter"),
             ]:
                 print(f"{Theme.white}{Theme.bold}{cmd:<16}{Theme.reset} {Theme.muted}{desc}{Theme.reset}")
-            input(f"\n{Theme.muted}press enter to return...{Theme.reset}")
+            _pause("press enter to return...")
         elif action == "clear":
             findings, target = [], "no target selected"
         elif action == "exploit" and len(parts) >= 4 and parts[3] == "--param":
@@ -426,7 +442,7 @@ def launch() -> int:
                 findings, target = result, tool_target
         elif action == "exploit":
             print(f"{Theme.red}usage:{Theme.reset} exploit sqlmap <url> --param <name>")
-            input(f"\n{Theme.muted}press enter to continue...{Theme.reset}")
+            _pause("press enter to continue...")
         elif action.startswith("/"):
             tool_name = action[1:]
             if tool_name == "tools":
@@ -435,7 +451,7 @@ def launch() -> int:
                 for row in tool_status():
                     state = "installed" if row["installed"] else "missing"
                     print(f"{Theme.white}{row['name']:<10}{Theme.reset} {Theme.grey}{state:<10} {row['target_kind']}{Theme.reset}")
-                input(f"\n{Theme.muted}press enter to return...{Theme.reset}")
+                _pause("press enter to return...")
             elif len(parts) > 1:
                 tool_target = parts[1] if parts[1].startswith("http") else str(Path(parts[1]).expanduser())
                 result = _run_single_tool(tool_name, tool_target)
@@ -443,11 +459,11 @@ def launch() -> int:
                     findings, target = result, tool_target
             else:
                 print(f"{Theme.red}usage:{Theme.reset} /{tool_name} <path-or-url>")
-                input(f"\n{Theme.muted}press enter to continue...{Theme.reset}")
+                _pause("press enter to continue...")
         elif action == "authorize" and len(parts) > 1:
             authorize(parts[1])
             print(f"{Theme.green}✓{Theme.reset} authorized: {parts[1]}")
-            input(f"\n{Theme.muted}press enter to continue...{Theme.reset}")
+            _pause("press enter to continue...")
         elif action == "scan" and len(parts) > 1:
             target = parts[1] if parts[1].startswith("http") else str(Path(parts[1]).expanduser())
             instructions = " ".join(parts[2:])
@@ -456,7 +472,7 @@ def launch() -> int:
             w = _width()
             _section("PROVIDER POOL", w)
             print(pool_status())
-            input(f"\n{Theme.muted}press enter to return...{Theme.reset}")
+            _pause("press enter to return...")
         elif action == "runs":
             w = _width()
             saved = list_runs()
@@ -466,7 +482,7 @@ def launch() -> int:
                     print(f"{Theme.white}{run.get('run_id', ''):<28}{Theme.reset} {Theme.red}{len(run.get('findings', [])):>3}{Theme.reset} findings  {Theme.muted}{run.get('status', '')}{Theme.reset}")
             else:
                 print(f"{Theme.muted}no saved runs yet{Theme.reset}")
-            input(f"\n{Theme.muted}press enter to return...{Theme.reset}")
+            _pause("press enter to return...")
         elif action == "report":
             try:
                 run_arg = parts[1] if len(parts) > 1 and parts[1] != "human" else None
@@ -477,13 +493,13 @@ def launch() -> int:
                     print("\n" + _markdown(run))
             except FileNotFoundError as exc:
                 print(f"{Theme.red}{exc}{Theme.reset}")
-            input(f"\n{Theme.muted}press enter to return...{Theme.reset}")
+            _pause("press enter to return...")
         elif action == "view":
             print(f"{Theme.muted}run{Theme.reset} {Theme.white}dexter view{Theme.reset} {Theme.muted}in another terminal to open the browser viewer.{Theme.reset}")
-            input(f"\n{Theme.muted}press enter to return...{Theme.reset}")
+            _pause("press enter to return...")
         else:
             print(f"{Theme.red}unknown command.{Theme.reset} type {Theme.white}help{Theme.reset} for commands.")
-            input(f"\n{Theme.muted}press enter to continue...{Theme.reset}")
+            _pause("press enter to continue...")
         _render(findings, list_runs(), target)
 
 
