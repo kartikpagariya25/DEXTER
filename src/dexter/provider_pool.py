@@ -104,7 +104,7 @@ def _chat_completion(base_url: str, api_key: str | None, model: str, messages: l
     return payload["choices"][0]["message"]
 
 
-def call_llm(messages: list[dict], tools: list[dict] | None = None) -> PoolResult:
+def _call_once(messages: list[dict], tools: list[dict] | None = None) -> PoolResult:
     base_url = _resolve_base_url()
     model = _resolve_model()
     cooldown = int(os.environ.get("DEXTER_LLM_COOLDOWN_SECONDS", DEFAULT_COOLDOWN_SECONDS))
@@ -210,3 +210,30 @@ def pool_status() -> str:
     local_url = os.environ.get("DEXTER_LLM_LOCAL_URL", DEFAULT_LOCAL_URL)
     lines.append(f"local fallback ({local_url}): {'reachable' if _reachable(local_url) else 'unreachable'}")
     return "\n".join(lines)
+
+
+DEFAULT_MAX_WAIT_SECONDS = 30
+MAX_WAIT_ATTEMPTS = 3
+
+
+def _soonest_wake() -> float | None:
+    keys = _load_keys()
+    state = _load_state()
+    now = time.time()
+    waits = [state[_key_id(k)] - now for k in keys if state.get(_key_id(k), 0) > now]
+    return min(waits) if waits else None
+
+
+def call_llm(messages: list[dict], tools: list[dict] | None = None) -> PoolResult:
+    max_wait = float(os.environ.get("DEXTER_LLM_MAX_WAIT", DEFAULT_MAX_WAIT_SECONDS))
+    result = _call_once(messages, tools)
+    for _ in range(MAX_WAIT_ATTEMPTS):
+        if result.provider != "none":
+            break
+        wake = _soonest_wake()
+        if wake is None or wake > max_wait:
+            break
+        with Spinner("rate limit reached, waiting"):
+            time.sleep(max(wake, 0) + 0.5)
+        result = _call_once(messages, tools)
+    return result

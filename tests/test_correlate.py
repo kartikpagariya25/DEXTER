@@ -95,3 +95,11 @@ def test_merges_across_slash_styles_and_drive_case():
     result = correlate([f1, f2])
 
     assert len(result) == 1
+
+
+def test_merges_eval_findings_with_different_wording():
+    f1 = _finding(title="Dynamic command execution", description="Dynamic execution can become command injection.", source="local-rule")
+    f2 = _finding(title="Dynamic code execution via eval()", description="eval of dynamic input", source="semgrep")
+    f3 = _finding(title="Found data from a web request flowing to `eval`", description="user input reaches eval", source="semgrep")
+
+    assert len(correlate([f1, f2, f3])) == 1

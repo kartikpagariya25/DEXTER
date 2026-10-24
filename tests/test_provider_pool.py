@@ -199,3 +199,17 @@ def test_key_already_cooling_reports_that_specifically(fake_server, tmp_path: Pa
 
     assert result.provider == "none"
     assert "cooling down" in result.error
+
+
+def test_waits_out_short_rate_limit_then_succeeds(fake_server, tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("DEXTER_HOME", str(tmp_path))
+    monkeypatch.setenv("DEXTER_LLM_BASE_URL", fake_server)
+    monkeypatch.setenv("DEXTER_LLM_KEYS", "good-key")
+    monkeypatch.setenv("DEXTER_LLM_MAX_WAIT", "5")
+    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "http://127.0.0.1:1")
+    pp._save_state({pp._key_id("good-key"): pp.time.time() + 1})
+    monkeypatch.setattr(pp.time, "sleep", lambda s: pp._save_state({}))
+
+    result = pp.call_llm([{"role": "user", "content": "hi"}])
+
+    assert result.provider == "pool"

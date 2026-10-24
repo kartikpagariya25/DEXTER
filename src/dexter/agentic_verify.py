@@ -63,6 +63,9 @@ SYSTEM_PROMPT = (
     '{"verdict": "verified" | "false-positive-suspected" | "needs-manual-review", '
     '"confidence": <0.0 to 1.0>, "reasoning": "<2-3 sentences: what you checked, what you found, and why '
     'it changed or confirmed your assessment. Plain language, no jargon.>"}. '
+    "Low entropy does not make a secret fake: a readable password, key or signing secret that is "
+    "written into code or config and used for authentication is a real finding. Only call it a "
+    "false positive when the value is clearly a placeholder, example or test fixture. "
     "Be decisive once you have enough context — do not call more than a couple of tools."
 )
 
@@ -82,7 +85,7 @@ def _read_lines(root: str, file: str, start: int, end: int) -> str:
             path = Path(root) / file
         lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
         start = max(1, start)
-        end = min(len(lines), max(start, end))
+        end = min(len(lines), max(start, end), start + 79)
         return "\n".join(lines[start - 1:end]) or "(empty range)"
     except OSError as exc:
         return f"error reading file: {exc}"
