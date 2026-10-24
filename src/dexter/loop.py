@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Callable
@@ -37,6 +38,11 @@ SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 # line are actually the same underlying issue (merge them) or coincidentally
 # co-located but unrelated (e.g. a debug flag next to a secret — keep both).
 TOPIC_KEYWORDS = ("secret", "password", "credential", "token", "jwt", "sql", "injection", "xss", "cors", "origin", "debug", "tls", "ssl", "vulnerable", "outdated", "cve")
+
+
+def _location_key(path: str) -> str:
+    norm = os.path.normpath(path.replace("\\", "/")).replace("\\", "/")
+    return norm.lower() if re.match(r"^[A-Za-z]:", norm) else norm
 
 
 def _topics(finding: Finding) -> set[str]:
@@ -80,7 +86,7 @@ def correlate(findings: list[Finding]) -> list[Finding]:
         if not finding.file or not finding.line:
             unlocated.append(finding)
             continue
-        by_location.setdefault((finding.file, finding.line), []).append(finding)
+        by_location.setdefault((_location_key(finding.file), finding.line), []).append(finding)
 
     merged: list[Finding] = list(unlocated)
     for group in by_location.values():

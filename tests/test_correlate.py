@@ -86,3 +86,12 @@ def test_confidence_capped_below_one():
 
     assert len(result) == 1
     assert result[0].confidence <= 0.98
+
+
+def test_merges_across_slash_styles_and_drive_case():
+    f1 = _finding(title="Hard-coded secret", description="credential embedded", file="F:/campushub/.env", source="gitleaks", confidence=0.6)
+    f2 = _finding(title="Hard-coded secret", description="credential embedded", file="f:\\campushub\\.env", source="local-rule", confidence=0.5)
+
+    result = correlate([f1, f2])
+
+    assert len(result) == 1
