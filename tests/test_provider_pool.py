@@ -151,7 +151,7 @@ def test_all_keys_exhausted_falls_back_to_none(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("DEXTER_HOME", str(tmp_path))
     monkeypatch.setenv("DEXTER_LLM_BASE_URL", "http://127.0.0.1:1")
     monkeypatch.setenv("DEXTER_LLM_KEYS", "any-key")
-    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "")
 
     result = pp.call_llm([{"role": "user", "content": "hi"}])
 
@@ -166,7 +166,7 @@ def test_no_keys_configured_gives_specific_error(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("DEXTER_LLM_KEYS", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
-    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "")
 
     result = pp.call_llm([{"role": "user", "content": "hi"}])
 
@@ -179,7 +179,7 @@ def test_429_failure_reports_rate_limited_in_error(fake_server, tmp_path: Path, 
     monkeypatch.setenv("DEXTER_HOME", str(tmp_path))
     monkeypatch.setenv("DEXTER_LLM_BASE_URL", fake_server)
     monkeypatch.setenv("DEXTER_LLM_KEYS", "bad-key")
-    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "")
 
     result = pp.call_llm([{"role": "user", "content": "hi"}])
 
@@ -192,7 +192,7 @@ def test_key_already_cooling_reports_that_specifically(fake_server, tmp_path: Pa
     monkeypatch.setenv("DEXTER_HOME", str(tmp_path))
     monkeypatch.setenv("DEXTER_LLM_BASE_URL", fake_server)
     monkeypatch.setenv("DEXTER_LLM_KEYS", "bad-key")
-    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "")
 
     pp.call_llm([{"role": "user", "content": "hi"}])  # first call puts the key in cooldown
     result = pp.call_llm([{"role": "user", "content": "hi again"}])  # second call should see it already cooling
@@ -206,10 +206,24 @@ def test_waits_out_short_rate_limit_then_succeeds(fake_server, tmp_path: Path, m
     monkeypatch.setenv("DEXTER_LLM_BASE_URL", fake_server)
     monkeypatch.setenv("DEXTER_LLM_KEYS", "good-key")
     monkeypatch.setenv("DEXTER_LLM_MAX_WAIT", "5")
-    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "http://127.0.0.1:1")
-    pp._save_state({pp._key_id("good-key"): pp.time.time() + 1})
+    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "")
+    pp._save_state({pp._key_id("good-key"): pp.time.time() - 0.1 + 1})
     monkeypatch.setattr(pp, "_wait", lambda s: pp._save_state({}))
 
     result = pp.call_llm([{"role": "user", "content": "hi"}])
 
     assert result.provider == "pool"
+
+
+def test_waits_even_when_request_outlasts_retry_after(fake_server, tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("DEXTER_HOME", str(tmp_path))
+    monkeypatch.setenv("DEXTER_LLM_BASE_URL", fake_server)
+    monkeypatch.setenv("DEXTER_LLM_KEYS", "bad-key-with-retry-after")
+    monkeypatch.setenv("DEXTER_LLM_MAX_WAIT", "10")
+    waits = []
+    monkeypatch.setattr(pp, "_wait", lambda s: waits.append(s))
+
+    result = pp.call_llm([{"role": "user", "content": "hi"}])
+
+    assert result.provider == "none"
+    assert len(waits) == pp.MAX_WAIT_ATTEMPTS

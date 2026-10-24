@@ -26,6 +26,7 @@ class PoolResult:
     provider: str  # "pool", "local", or "none"
     message: dict | None = None  # full assistant message, only populated when tools were used
     error: str | None = None  # human-readable reason, populated only when provider == "none"
+    retry_in: float | None = None  # seconds until a rate-limited key frees up, when that is why the call failed
 
 
 def _state_path() -> Path:
@@ -117,11 +118,13 @@ def _call_once(messages: list[dict], tools: list[dict] | None = None) -> PoolRes
         notes.append("no cloud API key configured (set DEXTER_LLM_KEYS)")
 
     all_cooling = True
+    frees_at: list[float] = []
     for key in keys:
         kid = _key_id(key)
         until = state.get(kid, 0)
         if until > now:
             notes.append(f"key {kid} cooling down ({int(until - now)}s left)")
+            frees_at.append(until)
             continue
         all_cooling = False
         try:
@@ -137,7 +140,8 @@ def _call_once(messages: list[dict], tools: list[dict] | None = None) -> PoolRes
                 retry_after = _parse_retry_after(exc)
                 wait = retry_after if retry_after is not None else cooldown
                 wait = min(wait, MAX_COOLDOWN_SECONDS)
-                state[kid] = now + wait
+                state[kid] = time.time() + wait
+                frees_at.append(state[kid])
                 _save_state(state)
                 notes.append(f"key {kid} rate-limited (429), cooling {int(wait)}s")
             else:
@@ -159,11 +163,12 @@ def _call_once(messages: list[dict], tools: list[dict] | None = None) -> PoolRes
     local_url = os.environ.get("DEXTER_LLM_LOCAL_URL", DEFAULT_LOCAL_URL)
     local_model = os.environ.get("DEXTER_LLM_LOCAL_MODEL", DEFAULT_LOCAL_MODEL)
     local_key = os.environ.get("DEXTER_LLM_LOCAL_API_KEY")
-    try:
-        message = _chat_completion(local_url, local_key, local_model, messages, tools)
-        return PoolResult(message.get("content") or "", "local", message)
-    except Exception as exc:
-        notes.append(f"local fallback ({local_url}) failed: {type(exc).__name__}: {exc}")
+    if local_url:
+        try:
+            message = _chat_completion(local_url, local_key, local_model, messages, tools)
+            return PoolResult(message.get("content") or "", "local", message)
+        except Exception as exc:
+            notes.append(f"local fallback ({local_url}) failed: {type(exc).__name__}: {exc}")
 
     if not keys:
         prefix = "no cloud keys configured"
@@ -171,7 +176,8 @@ def _call_once(messages: list[dict], tools: list[dict] | None = None) -> PoolRes
         prefix = "all configured keys cooling down"
     else:
         prefix = "all providers failed"
-    return PoolResult("", "none", error=f"{prefix} — " + "; ".join(notes))
+    retry_in = max(0.0, min(frees_at) - time.time()) if frees_at else None
+    return PoolResult("", "none", error=f"{prefix} — " + "; ".join(notes), retry_in=retry_in)
 
 
 def _reachable(base_url: str) -> bool:
@@ -220,24 +226,15 @@ def _wait(seconds: float) -> None:
     time.sleep(seconds)
 
 
-def _soonest_wake() -> float | None:
-    keys = _load_keys()
-    state = _load_state()
-    now = time.time()
-    waits = [state[_key_id(k)] - now for k in keys if state.get(_key_id(k), 0) > now]
-    return min(waits) if waits else None
-
-
 def call_llm(messages: list[dict], tools: list[dict] | None = None) -> PoolResult:
     max_wait = float(os.environ.get("DEXTER_LLM_MAX_WAIT", DEFAULT_MAX_WAIT_SECONDS))
     result = _call_once(messages, tools)
-    for _ in range(MAX_WAIT_ATTEMPTS):
+    for attempt in range(MAX_WAIT_ATTEMPTS):
         if result.provider != "none":
             break
-        wake = _soonest_wake()
-        if wake is None or wake > max_wait:
+        if result.retry_in is None or result.retry_in > max_wait:
             break
         with Spinner("rate limit reached, waiting"):
-            _wait(max(wake, 0) + 0.5)
+            _wait(result.retry_in + 1.0 + attempt * 2)
         result = _call_once(messages, tools)
     return result

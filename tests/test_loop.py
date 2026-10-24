@@ -120,7 +120,7 @@ def test_agentic_refine_ignores_out_of_range_index():
 def test_agentic_refine_returns_none_when_no_llm(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("DEXTER_LLM_KEYS", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "")
     from dexter.loop import _agentic_refine
     from dexter.models import Finding
 
@@ -132,7 +132,7 @@ def test_agentic_refine_returns_none_when_no_llm(tmp_path: Path, monkeypatch):
 def test_agentic_refine_reports_reason_via_on_step(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("DEXTER_LLM_KEYS", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "")
     from dexter.loop import _agentic_refine
     from dexter.models import Finding
 

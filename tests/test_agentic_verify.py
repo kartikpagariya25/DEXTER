@@ -55,7 +55,7 @@ def test_on_step_reports_real_reason_when_llm_unreachable(tmp_path: Path, monkey
     monkeypatch.setenv("DEXTER_HOME", str(tmp_path))
     monkeypatch.delenv("DEXTER_LLM_KEYS", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "")
 
     steps: list[str] = []
     result = av.agentic_verify(
@@ -150,7 +150,7 @@ def test_returns_none_when_no_llm_reachable(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("DEXTER_HOME", str(tmp_path))
     monkeypatch.delenv("DEXTER_LLM_KEYS", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("DEXTER_LLM_LOCAL_URL", "")
 
     result = av.agentic_verify({"title": "t", "file": "f", "line": 1, "evidence": "e", "description": "d"}, str(tmp_path))
 
